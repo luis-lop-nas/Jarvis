@@ -59,6 +59,8 @@ def build_default_registry() -> ToolRegistry:
         calendar,
         email,
         vision,
+        code_assistant,
+        knowledge,
     )
 
     registry = ToolRegistry()
@@ -67,12 +69,12 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="shell",
-            description="Ejecuta un comando de shell (macOS/Linux). Útil para comandos del sistema, git, npm, etc.",
+            description="Ejecuta un comando de shell (macOS/Linux)",
             fn=shell.run_shell,
             schema={
                 "command": "Comando a ejecutar (obligatorio)",
                 "cwd": "Directorio de trabajo (opcional)",
-                "timeout_sec": "Timeout en segundos (opcional, default 30)",
+                "timeout_sec": "Timeout en segundos (opcional)",
                 "allow_dangerous": "Permitir comandos peligrosos (bool, opcional)",
             },
         )
@@ -82,10 +84,10 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="filesystem",
-            description="Opera sobre archivos en el workspace. Acciones: write_text, read_text, list_dir, mkdir, exists, delete",
+            description="Opera sobre archivos: write_text, read_text, list_dir, mkdir, exists, delete",
             fn=filesystem.run_filesystem,
             schema={
-                "action": "Acción a realizar: write_text, read_text, list_dir, mkdir, exists, delete (obligatorio)",
+                "action": "write_text, read_text, list_dir, mkdir, exists, delete (obligatorio)",
                 "path": "Ruta relativa al workspace (obligatorio)",
                 "content": "Contenido (para write_text)",
                 "recursive": "Recursivo (bool, para delete/mkdir)",
@@ -97,7 +99,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="open_app",
-            description="Abre aplicaciones, URLs o archivos en macOS usando el comando 'open'",
+            description="Abre aplicaciones, URLs o archivos en macOS",
             fn=open_app.run_open_app,
             schema={
                 "app": "Nombre de la aplicación (ej: Spotify, Safari)",
@@ -112,13 +114,13 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="run_code",
-            description="Ejecuta código Python o Node.js en sandbox Docker aislado",
+            description="Ejecuta código Python o Node.js en sandbox Docker",
             fn=run_code.run_code,
             schema={
-                "language": "Lenguaje: 'python' o 'node' (obligatorio)",
-                "code": "Código a ejecutar (snippet)",
-                "file": "Ruta a archivo de código (alternativa a 'code')",
-                "timeout_sec": "Timeout en segundos (opcional, default 30)",
+                "language": "python o node (obligatorio)",
+                "code": "Código a ejecutar",
+                "file": "Ruta a archivo de código",
+                "timeout_sec": "Timeout en segundos (opcional)",
             },
         )
     )
@@ -127,11 +129,11 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="web_search",
-            description="Busca información en internet usando DuckDuckGo",
+            description="Busca información en internet",
             fn=web_search.run_web_search,
             schema={
                 "query": "Término de búsqueda (obligatorio)",
-                "limit": "Número de resultados (opcional, default 5, max 10)",
+                "limit": "Número de resultados (opcional, max 10)",
             },
         )
     )
@@ -143,7 +145,7 @@ def build_default_registry() -> ToolRegistry:
             description="Controla Spotify: play, pause, next, previous, status, volume_up, volume_down",
             fn=spotify.spotify_control,
             schema={
-                "action": "Acción: play, pause, next, previous, status, volume_up, volume_down (obligatorio)",
+                "action": "play, pause, next, previous, status, volume_up, volume_down (obligatorio)",
             },
         )
     )
@@ -152,11 +154,11 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="calendar",
-            description="Consulta el calendario de macOS: today, tomorrow, week, create (recordatorio)",
+            description="Consulta calendario: today, tomorrow, week, create (recordatorio)",
             fn=calendar.calendar_query,
             schema={
-                "action": "Acción: today, tomorrow, week, create (obligatorio)",
-                "query": "Texto para búsqueda o título del recordatorio (para 'create')",
+                "action": "today, tomorrow, week, create (obligatorio)",
+                "query": "Título del recordatorio (para create)",
             },
         )
     )
@@ -165,27 +167,62 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="send_email",
-            description="Envía emails usando Mail.app de macOS",
+            description="Envía emails usando Mail.app",
             fn=email.send_email,
             schema={
-                "to": "Destinatario (email, obligatorio)",
-                "subject": "Asunto del email (obligatorio)",
+                "to": "Destinatario (obligatorio)",
+                "subject": "Asunto (obligatorio)",
                 "body": "Cuerpo del mensaje",
-                "action": "send o draft (opcional, default send)",
+                "action": "send o draft (opcional)",
             },
         )
     )
 
-    # 9. Vision (NUEVO)
+    # 9. Vision
     registry.register(
         ToolSpec(
             name="vision",
-            description="Analiza lo que hay en pantalla. Puede describir, responder preguntas, o leer texto (OCR)",
+            description="Analiza pantalla: describe, answer, read (OCR), context",
             fn=vision.vision_command,
             schema={
                 "action": "describe, answer, read, context (obligatorio)",
-                "question": "Pregunta sobre la pantalla (para action='answer')",
-                "capture_mode": "full o window (opcional, default full)",
+                "question": "Pregunta sobre la pantalla (para answer)",
+                "capture_mode": "full o window (opcional)",
+            },
+        )
+    )
+
+    # 10. Code Assistant
+    registry.register(
+        ToolSpec(
+            name="code_assistant",
+            description="Genera o edita código. Abre automáticamente en VS Code.",
+            fn=code_assistant.code_assistant,
+            schema={
+                "task": "Descripción de lo que debe programar (obligatorio)",
+                "language": "Lenguaje de programación (python, javascript, etc.)",
+                "file_path": "Ruta del archivo (opcional, se genera auto)",
+                "open_vscode": "Abrir en VS Code (bool, default true)",
+            },
+        )
+    )
+
+    # 11. Knowledge Base (NUEVO)
+    registry.register(
+        ToolSpec(
+            name="knowledge",
+            description="Gestiona base de conocimiento: search (buscar info), add (añadir doc), add_code (añadir código), add_tutorial (añadir tutorial), list (listar), delete, stats",
+            fn=knowledge.knowledge_tool,
+            schema={
+                "action": "search, add, add_code, add_tutorial, list, delete, stats (obligatorio)",
+                "query": "Consulta de búsqueda (para search)",
+                "content": "Contenido a guardar (para add/add_code/add_tutorial)",
+                "title": "Título o descripción",
+                "language": "Lenguaje (para add_code, default python)",
+                "category": "Categoría (para add_tutorial)",
+                "tags": "Tags separados por comas (para add_code)",
+                "doc_id": "ID del documento (para delete)",
+                "n_results": "Número de resultados (para search, default 3)",
             },
         )
     )

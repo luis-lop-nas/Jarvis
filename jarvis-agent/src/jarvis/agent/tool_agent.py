@@ -136,6 +136,12 @@ class ToolAgent:
             r'\b(qué.*ves|puedes.*ver|analiza.*imagen)\b',
             r'\b(qué.*dice.*en.*pantalla|qué.*texto.*hay)\b',
             r'\b(mira.*esto|observa.*esto|fíjate.*en)\b',
+	    # KNOWLEDGE BASE (NUEVO)
+            r'\b(aprende|guarda.*conocimiento|añade.*conocimiento|recuerda.*esto)\b',
+            r'\b(busca.*en.*conocimiento|qué.*sabes.*sobre|consulta.*conocimiento)\b',
+            r'\b(añade.*tutorial|guarda.*tutorial|aprende.*tutorial)\b',
+            r'\b(añade.*código|guarda.*código|guarda.*snippet)\b',
+            r'\b(lista.*conocimiento|muestra.*conocimiento|qué.*has.*aprendido)\b',
         ]
         
         for pattern in tool_patterns:
