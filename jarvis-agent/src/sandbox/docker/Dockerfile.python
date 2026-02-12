@@ -1,12 +1,25 @@
-# Sandbox Python para ejecutar snippets/proyectos dentro de /workspace
-FROM python:3.12-slim
+# Dockerfile.python
+# Imagen base para ejecutar código Python en sandbox
 
+FROM python:3.11-slim
+
+# Instalamos algunas librerías comunes que suelen necesitarse
+# (puedes añadir más según necesites)
+RUN pip install --no-cache-dir \
+    numpy \
+    pandas \
+    requests \
+    matplotlib \
+    pillow
+
+# Directorio de trabajo donde se montará el workspace
 WORKDIR /workspace
 
-# (Opcional) utilidades básicas
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# Usuario no-root para seguridad
+RUN useradd -m -u 1000 jarvis && \
+    chown -R jarvis:jarvis /workspace
 
-# Por defecto solo muestra versión; la tool run_code ejecuta su propio comando
-CMD ["python", "--version"]
+USER jarvis
+
+# Por defecto ejecuta python (se le pasa el script como argumento)
+ENTRYPOINT ["python"]

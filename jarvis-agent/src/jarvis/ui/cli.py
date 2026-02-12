@@ -77,12 +77,13 @@ def _print_help(console: Console) -> None:
                     "",
                     "[b]Uso:[/b]",
                     "  Escribe una petición normal y Jarvis responderá.",
-                    "  Si hace falta, llamará tools (por ahora: shell) para ejecutar acciones.",
+                    "  Si hace falta, llamará tools (shell, filesystem, run_code, etc.) para ejecutar acciones.",
                     "",
                     "[b]Ejemplos:[/b]",
                     "  - 'Haz un ls de la carpeta actual'",
                     "  - 'Crea una carpeta llamada test y dime qué hay dentro'",
-                    "  - 'Busca mi versión de node' (cuando añadamos tool de node o usando shell)",
+                    "  - 'Busca información sobre Python en la web'",
+                    "  - 'Escribe un script que calcule los primeros 10 números de Fibonacci'",
                 ]
             ),
             title="Jarvis CLI",
@@ -163,4 +164,74 @@ def run_cli(*, settings: Any, paths: Any) -> None:
     console = Console()
 
     # Creamos el agente con tools una vez por sesión.
-    # Por ahora solo está registrada la tool "shell".
+    # El registry ya tiene todas las tools registradas.
+    agent = tool_agent_from_settings(settings)
+
+    # Log de sesión
+    log_path = _make_session_log_path(paths.logs_dir)
+    _safe_write_line(log_path, f"=== Sesión iniciada: {_timestamp()} ===")
+
+    # Banner de bienvenida
+    console.print(
+        Panel(
+            "[b]Jarvis Agent[/b] - CLI\n"
+            "Escribe tu petición o usa [cyan]/help[/cyan] para ver comandos.",
+            title="🤖 Bienvenido",
+            border_style="cyan",
+        )
+    )
+
+    # Bucle principal
+    while True:
+        try:
+            # Prompt
+            user_input = Prompt.ask("\n[bold cyan]Tú[/bold cyan]").strip()
+
+            if not user_input:
+                continue
+
+            # Log de entrada
+            _safe_write_line(log_path, f"[{_timestamp()}] USER: {user_input}")
+
+            # Comandos internos
+            if user_input.startswith("/"):
+                should_continue = _handle_command(
+                    user_input,
+                    console=console,
+                    settings=settings,
+                    paths=paths,
+                    agent=agent,
+                )
+                if not should_continue:
+                    break
+                continue
+
+            # Llamada al agente
+            console.print("\n[bold magenta]Jarvis[/bold magenta]: ", end="")
+            
+            try:
+                response = agent.run(user_input)
+                console.print(response)
+                
+                # Log de respuesta
+                _safe_write_line(log_path, f"[{_timestamp()}] ASSISTANT: {response}")
+                
+            except Exception as e:
+                error_msg = f"Error: {type(e).__name__}: {e}"
+                console.print(f"[red]{error_msg}[/red]")
+                _safe_write_line(log_path, f"[{_timestamp()}] ERROR: {error_msg}")
+                
+                if settings.debug:
+                    import traceback
+                    console.print(traceback.format_exc())
+
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Saliendo...[/yellow]")
+            break
+        except EOFError:
+            console.print("\n[yellow]Saliendo...[/yellow]")
+            break
+
+    # Log de cierre
+    _safe_write_line(log_path, f"=== Sesión finalizada: {_timestamp()} ===")
+    console.print("\n[green]¡Hasta luego![/green]\n")
