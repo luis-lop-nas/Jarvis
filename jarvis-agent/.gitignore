@@ -1,0 +1,47 @@
+# =========================
+# Secrets / env
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python venv
+# =========================
+.venv/
+venv/
+ENV/
+env/
+
+# =========================
+# Python cache / build
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# =========================
+# Logs / runtime data
+# =========================
+data/jarvis.db
+data/logs/
+data/workspace/
+*.log
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+.vscode/
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
