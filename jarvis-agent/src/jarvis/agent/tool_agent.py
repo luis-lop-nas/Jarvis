@@ -1,8 +1,7 @@
 """
 tool_agent.py
 
-Agente híbrido: Groq para conversación, Ollama para herramientas.
-Decide automáticamente cuál usar según el contexto.
+Agente híbrido con memoria persistente.
 """
 
 from __future__ import annotations
@@ -30,6 +29,9 @@ class ToolAgentConfig(AgentConfig):
     use_groq: bool = False
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    # Memoria
+    session_id: Optional[str] = None
+    enable_memory: bool = True
 
 
 class ToolAgent:
@@ -38,10 +40,18 @@ class ToolAgent:
         config: ToolAgentConfig,
         registry: Optional[ToolRegistry] = None,
         state: Optional[AgentState] = None,
+        memory_store: Optional[Any] = None,
     ):
         self.config = config
         self.registry = registry or build_default_registry()
         self.state = state or AgentState()
+        self.memory_store = memory_store
+        
+        # Crear sesión si hay memoria
+        if self.memory_store and self.config.enable_memory and not self.config.session_id:
+            self.config.session_id = self.memory_store.create_session()
+            if self.config.debug:
+                print(f"📝 Nueva sesión de memoria: {self.config.session_id[:8]}...")
         
         self.groq_client = None
         if self.config.use_groq and self.config.groq_api_key:
@@ -49,42 +59,54 @@ class ToolAgent:
                 from groq import Groq
                 self.groq_client = Groq(api_key=self.config.groq_api_key)
                 if self.config.debug:
-                    print("✅ Modo Híbrido: Groq (conversación) + Ollama (herramientas)")
+                    print("✅ Modo Híbrido: Groq + Ollama")
+                    if self.memory_store:
+                        print("✅ Memoria persistente activada")
             except ImportError:
-                print("⚠️ Librería 'groq' no instalada. Usando solo Ollama.")
+                print("⚠️ Librería 'groq' no instalada. Usando Ollama.")
                 self.groq_client = None
 
+    def _save_message(self, role: str, content: str) -> None:
+        """Guarda mensaje en memoria persistente."""
+        if self.memory_store and self.config.enable_memory and self.config.session_id:
+            try:
+                self.memory_store.add_message(
+                    session_id=self.config.session_id,
+                    role=role,
+                    content=content
+                )
+            except Exception as e:
+                if self.config.debug:
+                    print(f"⚠️ Error guardando mensaje: {e}")
+
+    def _save_tool_event(self, tool_name: str, tool_args: Dict, tool_result: Dict) -> None:
+        """Guarda evento de herramienta en memoria."""
+        if self.memory_store and self.config.enable_memory and self.config.session_id:
+            try:
+                self.memory_store.add_tool_event(
+                    session_id=self.config.session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result=tool_result
+                )
+            except Exception as e:
+                if self.config.debug:
+                    print(f"⚠️ Error guardando tool event: {e}")
+
     def _needs_tools(self, user_text: str) -> bool:
-        """
-        Detecta si la pregunta necesita herramientas (acción) o solo conversación.
-        
-        Keywords que indican necesidad de tools:
-        - Acciones: ejecuta, corre, abre, crea, lista, busca (web), lee (archivo)
-        - Comandos: shell, terminal, código
-        - Archivos: archivo, carpeta, directorio
-        """
+        """Detecta si necesita herramientas."""
         text_lower = user_text.lower()
         
-        # Patterns que indican necesidad de herramientas
         tool_patterns = [
-            # Comandos/Shell
             r'\b(ejecuta|corre|run|shell|terminal|comando)\b',
             r'\b(lista|ls|dir|muestra.*archivo|muestra.*carpeta)\b',
             r'\b(git|npm|pip|brew|docker)\b',
-            
-            # Archivos
             r'\b(crea.*archivo|escribe.*archivo|lee.*archivo)\b',
             r'\b(abre.*carpeta|abre.*directorio)\b',
             r'\b(borra|elimina|delete).*\b(archivo|carpeta)\b',
-            
-            # Apps
             r'\b(abre|open|lanza|launch)\s+(spotify|chrome|safari|vscode|visual studio|finder)\b',
-            
-            # Código
             r'\b(ejecuta.*código|corre.*script|run.*code)\b',
             r'\b(python|node|javascript).*script\b',
-            
-            # Web search (necesita tool)
             r'\b(busca.*en.*web|busca.*internet|search.*web)\b',
             r'\b(encuentra.*información.*sobre|investiga.*sobre)\b',
         ]
@@ -92,18 +114,17 @@ class ToolAgent:
         for pattern in tool_patterns:
             if re.search(pattern, text_lower):
                 if self.config.debug:
-                    print(f"🔧 Detectado patrón de herramienta: '{pattern}'")
-                    print("→ Usando Ollama (local) para ejecutar tools")
+                    print(f"🔧 Patrón herramienta: '{pattern}'")
+                    print("→ Usando Ollama (tools)")
                 return True
         
-        # Conversación pura
         if self.config.debug:
-            print("💭 Conversación pura detectada")
-            print("→ Usando Groq (rápido e inteligente)")
+            print("💭 Conversación pura")
+            print("→ Usando Groq (rápido)")
         return False
 
     def _tools_for_ollama(self) -> List[Dict[str, Any]]:
-        """Convierte tools a formato Ollama."""
+        """Schema de tools para Ollama."""
         tools: List[Dict[str, Any]] = []
         
         for name, spec in self.registry.list().items():
@@ -150,7 +171,7 @@ class ToolAgent:
         return messages
 
     def _run_with_groq(self, user_text: str) -> str:
-        """Ejecuta conversación pura con Groq (rápido e inteligente)."""
+        """Groq para conversación pura."""
         messages = self.build_messages(user_text)
 
         try:
@@ -165,22 +186,20 @@ class ToolAgent:
             msg = choice.message
             final_text = (msg.content or "").strip() or "No generé respuesta."
             self.state.add_assistant(final_text)
+            self._save_message("assistant", final_text)
             return final_text
             
         except Exception as e:
             if self.config.debug:
-                err = f"Error Groq: {type(e).__name__}: {e}"
-                print(f"⚠️ {err}")
-                print("→ Fallback a Ollama local")
-            # Fallback a Ollama si Groq falla
+                print(f"⚠️ Error Groq: {e}")
+                print("→ Fallback a Ollama")
             return self._run_with_ollama(user_text, use_tools=False)
 
     def _run_with_ollama(self, user_text: str, use_tools: bool = True) -> str:
-        """Ejecuta con Ollama local (con o sin tools)."""
+        """Ollama local con o sin tools."""
         messages = self.build_messages(user_text)
         
         if not use_tools:
-            # Ollama sin tools (fallback de Groq)
             try:
                 response = requests.post(
                     f"{self.config.ollama_url}/api/chat",
@@ -197,13 +216,15 @@ class ToolAgent:
                 content = msg.get("content", "").strip()
                 final_text = content or "No generé respuesta."
                 self.state.add_assistant(final_text)
+                self._save_message("assistant", final_text)
                 return final_text
             except Exception as e:
-                err = f"Error Ollama: {type(e).__name__}: {e}"
+                err = f"Error Ollama: {e}"
                 self.state.add_assistant(err)
+                self._save_message("assistant", err)
                 return err
         
-        # Ollama CON tools
+        # Con tools
         tools = self._tools_for_ollama()
 
         for loop_count in range(self.config.max_tool_loops):
@@ -222,13 +243,10 @@ class ToolAgent:
                 data = response.json()
                 
             except Exception as e:
-                if self.config.debug:
-                    err = f"Error Ollama: {type(e).__name__}: {e}"
-                    self.state.add_assistant(err)
-                    return err
-                safe_err = "Error con Ollama. ¿Está corriendo?"
-                self.state.add_assistant(safe_err)
-                return safe_err
+                err = f"Error Ollama: {e}"
+                self.state.add_assistant(err)
+                self._save_message("assistant", err)
+                return err
 
             msg = data.get("message", {})
             content = msg.get("content", "").strip()
@@ -237,6 +255,7 @@ class ToolAgent:
             if not tool_calls:
                 final_text = content or "No generé respuesta."
                 self.state.add_assistant(final_text)
+                self._save_message("assistant", final_text)
                 return final_text
 
             messages.append({
@@ -262,6 +281,7 @@ class ToolAgent:
                     print(f"🔧 Ejecutando: {tool_name}")
 
                 tool_out = self.registry.call(tool_name, tool_args)
+                self._save_tool_event(tool_name, tool_args, tool_out)
 
                 messages.append({
                     "role": "tool",
@@ -270,35 +290,34 @@ class ToolAgent:
 
         msg = "Límite de tool loops alcanzado."
         self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
         return msg
 
     def run(self, user_text: str) -> str:
-        """
-        Ejecuta petición usando modo híbrido automático:
-        - Groq si es conversación pura (rápido, inteligente)
-        - Ollama si necesita herramientas (ejecución local)
-        """
+        """Ejecuta petición con modo híbrido y memoria."""
         user_text = (user_text or "").strip()
         if not user_text:
             return "Dime qué quieres que haga."
 
         self.state.add_user(user_text)
+        self._save_message("user", user_text)
 
-        # Decisión automática: ¿necesita tools?
         needs_tools = self._needs_tools(user_text)
 
         if needs_tools:
-            # Necesita herramientas → Ollama local
             return self._run_with_ollama(user_text, use_tools=True)
         else:
-            # Conversación pura → Groq (si disponible) o Ollama
             if self.groq_client and self.config.use_groq:
                 return self._run_with_groq(user_text)
             else:
                 return self._run_with_ollama(user_text, use_tools=False)
 
 
-def tool_agent_from_settings(settings: Any, registry: Optional[ToolRegistry] = None) -> ToolAgent:
+def tool_agent_from_settings(
+    settings: Any,
+    registry: Optional[ToolRegistry] = None,
+    memory_store: Optional[Any] = None,
+) -> ToolAgent:
     """Construye ToolAgent desde Settings."""
     cfg = ToolAgentConfig(
         ollama_model=getattr(settings, "ollama_model", "llama3.2:3b"),
@@ -307,5 +326,6 @@ def tool_agent_from_settings(settings: Any, registry: Optional[ToolRegistry] = N
         groq_model=getattr(settings, "groq_model", "llama-3.3-70b-versatile"),
         debug=bool(getattr(settings, "debug", False)),
         max_tool_loops=6,
+        enable_memory=True,
     )
-    return ToolAgent(cfg, registry=registry)
+    return ToolAgent(cfg, registry=registry, memory_store=memory_store)
