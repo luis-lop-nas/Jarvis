@@ -1,7 +1,7 @@
 """
 tool_agent.py
 
-Agente híbrido con memoria persistente.
+Agente híbrido con memoria persistente y visión.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ class ToolAgentConfig(AgentConfig):
     use_groq: bool = False
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
-    # Memoria
     session_id: Optional[str] = None
     enable_memory: bool = True
 
@@ -47,11 +46,10 @@ class ToolAgent:
         self.state = state or AgentState()
         self.memory_store = memory_store
         
-        # Crear sesión si hay memoria
         if self.memory_store and self.config.enable_memory and not self.config.session_id:
             self.config.session_id = self.memory_store.create_session()
             if self.config.debug:
-                print(f"📝 Nueva sesión de memoria: {self.config.session_id[:8]}...")
+                print(f"📝 Nueva sesión: {self.config.session_id[:8]}...")
         
         self.groq_client = None
         if self.config.use_groq and self.config.groq_api_key:
@@ -59,7 +57,7 @@ class ToolAgent:
                 from groq import Groq
                 self.groq_client = Groq(api_key=self.config.groq_api_key)
                 if self.config.debug:
-                    print("✅ Modo Híbrido: Groq + Ollama")
+                    print("✅ Modo Híbrido: Groq + Ollama + Visión")
                     if self.memory_store:
                         print("✅ Memoria persistente activada")
             except ImportError:
@@ -67,7 +65,7 @@ class ToolAgent:
                 self.groq_client = None
 
     def _save_message(self, role: str, content: str) -> None:
-        """Guarda mensaje en memoria persistente."""
+        """Guarda mensaje en memoria."""
         if self.memory_store and self.config.enable_memory and self.config.session_id:
             try:
                 self.memory_store.add_message(
@@ -80,7 +78,7 @@ class ToolAgent:
                     print(f"⚠️ Error guardando mensaje: {e}")
 
     def _save_tool_event(self, tool_name: str, tool_args: Dict, tool_result: Dict) -> None:
-        """Guarda evento de herramienta en memoria."""
+        """Guarda evento de herramienta."""
         if self.memory_store and self.config.enable_memory and self.config.session_id:
             try:
                 self.memory_store.add_tool_event(
@@ -98,17 +96,46 @@ class ToolAgent:
         text_lower = user_text.lower()
         
         tool_patterns = [
+            # Comandos/Shell
             r'\b(ejecuta|corre|run|shell|terminal|comando)\b',
             r'\b(lista|ls|dir|muestra.*archivo|muestra.*carpeta)\b',
             r'\b(git|npm|pip|brew|docker)\b',
+            
+            # Archivos
             r'\b(crea.*archivo|escribe.*archivo|lee.*archivo)\b',
             r'\b(abre.*carpeta|abre.*directorio)\b',
             r'\b(borra|elimina|delete).*\b(archivo|carpeta)\b',
-            r'\b(abre|open|lanza|launch)\s+(spotify|chrome|safari|vscode|visual studio|finder)\b',
+            
+            # Apps - MEJORADO
+            r'\b(abre|open|lanza|launch|inicia|arranca)\b',
+            r'\b(spotify|chrome|safari|vscode|visual studio|finder|mail|calendar|notes)\b',
+            
+            # Código
             r'\b(ejecuta.*código|corre.*script|run.*code)\b',
             r'\b(python|node|javascript).*script\b',
+            
+            # Web search
             r'\b(busca.*en.*web|busca.*internet|search.*web)\b',
             r'\b(encuentra.*información.*sobre|investiga.*sobre)\b',
+            
+            # Spotify
+            r'\b(pon.*música|reproduce|pausa|siguiente.*canción|canción.*anterior)\b',
+            r'\b(sube.*volumen|baja.*volumen|qué.*está.*sonando)\b',
+            
+            # Calendario
+            r'\b(qué.*tengo.*hoy|qué.*tengo.*mañana|eventos.*de)\b',
+            r'\b(crea.*recordatorio|añade.*recordatorio)\b',
+            
+            # Email
+            r'\b(envía.*email|manda.*correo|envía.*mensaje)\b',
+            
+            # VISIÓN (NUEVO)
+            r'\b(qué.*hay.*en.*pantalla|describe.*pantalla|mira.*pantalla)\b',
+            r'\b(lee.*pantalla|lee.*esto|transcribe.*pantalla)\b',
+            r'\b(captura.*pantalla|screenshot|haz.*captura)\b',
+            r'\b(qué.*ves|puedes.*ver|analiza.*imagen)\b',
+            r'\b(qué.*dice.*en.*pantalla|qué.*texto.*hay)\b',
+            r'\b(mira.*esto|observa.*esto|fíjate.*en)\b',
         ]
         
         for pattern in tool_patterns:

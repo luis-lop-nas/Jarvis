@@ -13,11 +13,22 @@ from jarvis.config import load_settings
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="jarvis", description="Jarvis Agent (CLI + Voice)")
+    p = argparse.ArgumentParser(prog="jarvis", description="Jarvis Agent (CLI + Voice + Web)")
     p.add_argument(
         "--voice",
         action="store_true",
         help="Activa modo voz + wake word.",
+    )
+    p.add_argument(
+        "--web",
+        action="store_true",
+        help="Activa servidor web (interface gráfica).",
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Puerto para servidor web (default: 8000).",
     )
     p.add_argument(
         "--no-voice",
@@ -41,6 +52,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.debug:
         settings.debug = True  # type: ignore[attr-defined]
 
+    # Modo WEB
+    if args.web:
+        import uvicorn
+        from jarvis.web.server import app
+        
+        print(f"🌐 Iniciando servidor web en http://localhost:{args.port}")
+        print(f"   Abre tu navegador y ve a: http://localhost:{args.port}")
+        print("   Presiona Ctrl+C para detener\n")
+        
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=args.port,
+            log_level="info"
+        )
+        return 0
+
+    # Modo VOZ
     use_voice = False
     if args.no_voice:
         use_voice = False
@@ -48,17 +77,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         use_voice = True
 
     if use_voice:
-        # Modo voz activado
         from jarvis.voice.voice_loop import VoiceLoop
         from jarvis.voice.wake_word import WakeWordConfig
         from jarvis.voice.stt import STTConfig
         from jarvis.voice.tts import TTSConfig
         from jarvis.agent.tool_agent import tool_agent_from_settings
+        from jarvis.memory.store import MemoryStore
 
-        # Crear agente
-        agent = tool_agent_from_settings(settings)
+        memory_store = MemoryStore(paths.db_path)
+        agent = tool_agent_from_settings(settings, memory_store=memory_store)
 
-        # Configurar voice loop
         wake_cfg = WakeWordConfig(
             access_key=settings.porcupine_access_key,
             keyword=settings.wake_word,
@@ -77,11 +105,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("🎤 Modo voz activado. Di 'Jarvis' para activar...")
         print("Presiona Ctrl+C para salir.\n")
 
-        # Función que conecta el agente
         def agent_fn(text: str) -> str:
             return agent.run(text)
 
-        # Arrancar loop de voz
         voice_loop.run_forever(agent_fn)
     else:
         # Modo CLI
