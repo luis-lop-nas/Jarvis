@@ -1,0 +1,15 @@
+FROM node:20-slim
+
+RUN npm install -g \
+    lodash \
+    axios \
+    moment
+
+WORKDIR /workspace
+
+RUN useradd -m jarvis && \
+    chown -R jarvis:jarvis /workspace
+
+USER jarvis
+
+ENTRYPOINT ["node"]

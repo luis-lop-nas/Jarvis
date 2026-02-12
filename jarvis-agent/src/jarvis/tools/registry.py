@@ -21,6 +21,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from jarvis.tools.shell import run_shell
+from jarvis.tools.filesystem import run_filesystem
+from jarvis.tools.open_app import run_open_app
+from jarvis.tools.run_code import run_code
+from jarvis.tools.web_search import run_web_search
 
 
 # Tipo estándar de tool:
@@ -97,36 +101,113 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     """
-    Crea un registry con las tools base registradas.
+    Crea un registry con todas las tools disponibles registradas.
 
-    Por ahora solo registramos:
-    - shell: ejecutar comandos del sistema (macOS)
-
-    En próximos pasos añadimos:
-    - open_app
-    - filesystem
-    - run_code (Docker)
-    - web_search
+    Tools registradas:
+    1. shell: ejecutar comandos del sistema (macOS)
+    2. filesystem: leer/escribir archivos en workspace
+    3. open_app: abrir aplicaciones en macOS
+    4. run_code: ejecutar código Python/Node en sandbox Docker
+    5. web_search: buscar información en la web
     """
     reg = ToolRegistry()
 
+    # 1) SHELL
     reg.register(
         ToolSpec(
             name="shell",
             description=(
                 "Ejecuta comandos en la terminal (macOS). "
                 "Devuelve stdout/stderr/returncode. "
-                "Usa para automatizar tareas del sistema."
+                "Usa para automatizar tareas del sistema, git, npm, etc."
             ),
             schema={
-                "command": "str (obligatorio)",
-                "cwd": "str (opcional)",
-                "timeout_sec": "int (opcional, default 30)",
-                "env": "dict (opcional)",
-                "allow_dangerous": "bool (opcional, default False)",
-                "shell": "bool (opcional, default True)",
+                "command": "str (obligatorio) - comando a ejecutar",
+                "cwd": "str (opcional) - directorio de trabajo",
+                "timeout_sec": "int (opcional, default 30) - timeout en segundos",
+                "env": "dict (opcional) - variables de entorno extra",
+                "allow_dangerous": "bool (opcional, default False) - permite comandos destructivos",
+                "shell": "bool (opcional, default True) - ejecutar como shell",
             },
             fn=run_shell,
+        )
+    )
+
+    # 2) FILESYSTEM
+    reg.register(
+        ToolSpec(
+            name="filesystem",
+            description=(
+                "Operaciones de archivos dentro del workspace (data/workspace/). "
+                "Acciones: write_text, read_text, list_dir, mkdir, exists, delete. "
+                "Usa para crear, leer, modificar archivos de forma segura."
+            ),
+            schema={
+                "action": "str (obligatorio) - write_text|read_text|list_dir|mkdir|exists|delete",
+                "path": "str (según action) - ruta relativa dentro del workspace",
+                "content": "str (solo write_text) - contenido a escribir",
+                "root_dir": "str (opcional, default 'data/workspace') - directorio raíz",
+                "recursive": "bool (solo delete, opcional) - borrar recursivo",
+            },
+            fn=run_filesystem,
+        )
+    )
+
+    # 3) OPEN_APP
+    reg.register(
+        ToolSpec(
+            name="open_app",
+            description=(
+                "Abre aplicaciones, URLs o archivos en macOS usando el comando 'open'. "
+                "Ejemplos: abrir Spotify, Visual Studio Code, URLs, archivos."
+            ),
+            schema={
+                "app": "str (opcional) - nombre de la aplicación (ej: 'Spotify', 'Visual Studio Code')",
+                "target": "str (opcional) - URL o ruta de archivo",
+                "wait": "bool (opcional, default False) - esperar a que termine",
+                "new_instance": "bool (opcional, default False) - nueva instancia",
+                "args": "list[str] (opcional) - argumentos extra para la app",
+            },
+            fn=run_open_app,
+        )
+    )
+
+    # 4) RUN_CODE
+    reg.register(
+        ToolSpec(
+            name="run_code",
+            description=(
+                "Ejecuta código Python o Node.js en un sandbox Docker aislado. "
+                "Monta el workspace y devuelve stdout/stderr. "
+                "Usa para ejecutar scripts, probar código, análisis de datos."
+            ),
+            schema={
+                "language": "str (obligatorio) - 'python' o 'node'",
+                "code": "str (opcional) - snippet de código a ejecutar",
+                "file": "str (opcional) - ruta relativa del archivo en workspace",
+                "workspace_dir": "str (opcional, default 'data/workspace')",
+                "timeout_sec": "int (opcional, default 30)",
+                "image": "str (opcional) - override imagen docker",
+                "extra_args": "list[str] (opcional) - argumentos para el script",
+            },
+            fn=run_code,
+        )
+    )
+
+    # 5) WEB_SEARCH
+    reg.register(
+        ToolSpec(
+            name="web_search",
+            description=(
+                "Busca información en la web usando DuckDuckGo. "
+                "Devuelve título, URL y snippet de los resultados. "
+                "Usa para buscar información actualizada, noticias, tutoriales."
+            ),
+            schema={
+                "query": "str (obligatorio) - consulta de búsqueda",
+                "limit": "int (opcional, default 5, max 10) - número de resultados",
+            },
+            fn=run_web_search,
         )
     )
 
