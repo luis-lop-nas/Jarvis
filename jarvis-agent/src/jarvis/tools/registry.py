@@ -1,18 +1,7 @@
 """
 registry.py
 
-Registro de herramientas (tools) disponibles para Jarvis.
-
-Idea:
-- Cada herramienta es una función Python que recibe un dict (args) y devuelve un dict (result).
-- Las tools se registran con:
-    - name: nombre corto (ej: "shell", "open_app", "run_code")
-    - description: para que el agente sepa cuándo usarla
-    - schema: contrato simple de parámetros esperados (documentación/validación ligera)
-
-Más adelante:
-- Este registro servirá para exponer tools al modelo (tool-calling),
-  ejecutar la tool elegida, y devolver el resultado al modelo para que continúe.
+Registro centralizado de herramientas.
 """
 
 from __future__ import annotations
@@ -20,195 +9,171 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from jarvis.tools.shell import run_shell
-from jarvis.tools.filesystem import run_filesystem
-from jarvis.tools.open_app import run_open_app
-from jarvis.tools.run_code import run_code
-from jarvis.tools.web_search import run_web_search
 
-
-# Tipo estándar de tool:
-# - args: dict con parámetros
-# - returns: dict con resultado
-ToolFn = Callable[[Dict[str, Any]], Dict[str, Any]]
-
-
-@dataclass(frozen=True)
+@dataclass
 class ToolSpec:
-    """
-    Especificación de una tool.
-
-    name: nombre único (clave en el registry)
-    description: texto breve que explica qué hace
-    schema: dict simple con "fields" esperados (para documentar parámetros)
-    fn: función que ejecuta la tool
-    """
+    """Especificación de una herramienta."""
     name: str
     description: str
-    schema: Dict[str, Any]
-    fn: ToolFn
+    fn: Callable[..., Dict[str, Any]]
+    schema: Optional[Dict[str, str]] = None
 
 
 class ToolRegistry:
-    """
-    Registro de herramientas.
-
-    Permite:
-    - register(...) para añadir tools
-    - list() para inspeccionar
-    - call(name, args) para ejecutar una tool
-    """
+    """Registro de herramientas disponibles."""
 
     def __init__(self) -> None:
         self._tools: Dict[str, ToolSpec] = {}
 
     def register(self, spec: ToolSpec) -> None:
-        """Registra una tool. Error si el nombre ya existe."""
-        name = spec.name.strip()
-        if not name:
-            raise ValueError("ToolSpec.name no puede estar vacío.")
-        if name in self._tools:
-            raise ValueError(f"La tool '{name}' ya está registrada.")
-        self._tools[name] = spec
-
-    def get(self, name: str) -> Optional[ToolSpec]:
-        """Devuelve una tool si existe, o None si no existe."""
-        return self._tools.get(name)
+        """Registra una herramienta."""
+        self._tools[spec.name] = spec
 
     def list(self) -> Dict[str, ToolSpec]:
-        """Devuelve un dict {name: ToolSpec} de todas las tools registradas."""
-        return dict(self._tools)
+        """Lista todas las herramientas."""
+        return self._tools.copy()
 
-    def call(self, name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Ejecuta una tool por nombre.
-
-        Convención de retorno:
-        - {"ok": True, "result": {...}}
-        - {"ok": False, "error": "..."}
-        """
-        args = args or {}
+    def call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Ejecuta una herramienta por nombre."""
         spec = self._tools.get(name)
         if not spec:
-            return {"ok": False, "error": f"Tool no encontrada: '{name}'"}
+            return {"ok": False, "error": f"Tool desconocida: {name}"}
 
         try:
-            result = spec.fn(args)
-            return {"ok": True, "result": result}
+            # Todas las funciones reciben args como dict
+            return spec.fn(args)
+        except TypeError as e:
+            return {"ok": False, "error": f"Argumentos inválidos: {e}"}
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def build_default_registry() -> ToolRegistry:
-    """
-    Crea un registry con todas las tools disponibles registradas.
+    """Construye el registro por defecto con todas las herramientas."""
+    from jarvis.tools import (
+        filesystem,
+        open_app,
+        run_code,
+        shell,
+        web_search,
+        spotify,
+        calendar,
+        email,
+    )
 
-    Tools registradas:
-    1. shell: ejecutar comandos del sistema (macOS)
-    2. filesystem: leer/escribir archivos en workspace
-    3. open_app: abrir aplicaciones en macOS
-    4. run_code: ejecutar código Python/Node en sandbox Docker
-    5. web_search: buscar información en la web
-    """
-    reg = ToolRegistry()
+    registry = ToolRegistry()
 
-    # 1) SHELL
-    reg.register(
+    # 1. Shell
+    registry.register(
         ToolSpec(
             name="shell",
-            description=(
-                "Ejecuta comandos en la terminal (macOS). "
-                "Devuelve stdout/stderr/returncode. "
-                "Usa para automatizar tareas del sistema, git, npm, etc."
-            ),
+            description="Ejecuta un comando de shell (macOS/Linux). Útil para comandos del sistema, git, npm, etc.",
+            fn=shell.run_shell,
             schema={
-                "command": "str (obligatorio) - comando a ejecutar",
-                "cwd": "str (opcional) - directorio de trabajo",
-                "timeout_sec": "int (opcional, default 30) - timeout en segundos",
-                "env": "dict (opcional) - variables de entorno extra",
-                "allow_dangerous": "bool (opcional, default False) - permite comandos destructivos",
-                "shell": "bool (opcional, default True) - ejecutar como shell",
+                "command": "Comando a ejecutar (obligatorio)",
+                "cwd": "Directorio de trabajo (opcional)",
+                "timeout_sec": "Timeout en segundos (opcional, default 30)",
+                "allow_dangerous": "Permitir comandos peligrosos (bool, opcional)",
             },
-            fn=run_shell,
         )
     )
 
-    # 2) FILESYSTEM
-    reg.register(
+    # 2. Filesystem
+    registry.register(
         ToolSpec(
             name="filesystem",
-            description=(
-                "Operaciones de archivos dentro del workspace (data/workspace/). "
-                "Acciones: write_text, read_text, list_dir, mkdir, exists, delete. "
-                "Usa para crear, leer, modificar archivos de forma segura."
-            ),
+            description="Opera sobre archivos en el workspace. Acciones: write_text, read_text, list_dir, mkdir, exists, delete",
+            fn=filesystem.run_filesystem,
             schema={
-                "action": "str (obligatorio) - write_text|read_text|list_dir|mkdir|exists|delete",
-                "path": "str (según action) - ruta relativa dentro del workspace",
-                "content": "str (solo write_text) - contenido a escribir",
-                "root_dir": "str (opcional, default 'data/workspace') - directorio raíz",
-                "recursive": "bool (solo delete, opcional) - borrar recursivo",
+                "action": "Acción a realizar: write_text, read_text, list_dir, mkdir, exists, delete (obligatorio)",
+                "path": "Ruta relativa al workspace (obligatorio)",
+                "content": "Contenido (para write_text)",
+                "recursive": "Recursivo (bool, para delete/mkdir)",
             },
-            fn=run_filesystem,
         )
     )
 
-    # 3) OPEN_APP
-    reg.register(
+    # 3. Open App
+    registry.register(
         ToolSpec(
             name="open_app",
-            description=(
-                "Abre aplicaciones, URLs o archivos en macOS usando el comando 'open'. "
-                "Ejemplos: abrir Spotify, Visual Studio Code, URLs, archivos."
-            ),
+            description="Abre aplicaciones, URLs o archivos en macOS usando el comando 'open'",
+            fn=open_app.run_open_app,
             schema={
-                "app": "str (opcional) - nombre de la aplicación (ej: 'Spotify', 'Visual Studio Code')",
-                "target": "str (opcional) - URL o ruta de archivo",
-                "wait": "bool (opcional, default False) - esperar a que termine",
-                "new_instance": "bool (opcional, default False) - nueva instancia",
-                "args": "list[str] (opcional) - argumentos extra para la app",
+                "app": "Nombre de la aplicación (ej: Spotify, Safari)",
+                "target": "URL o ruta de archivo a abrir",
+                "wait": "Esperar a que la app termine (bool)",
+                "new_instance": "Abrir nueva instancia (bool)",
             },
-            fn=run_open_app,
         )
     )
 
-    # 4) RUN_CODE
-    reg.register(
+    # 4. Run Code
+    registry.register(
         ToolSpec(
             name="run_code",
-            description=(
-                "Ejecuta código Python o Node.js en un sandbox Docker aislado. "
-                "Monta el workspace y devuelve stdout/stderr. "
-                "Usa para ejecutar scripts, probar código, análisis de datos."
-            ),
+            description="Ejecuta código Python o Node.js en sandbox Docker aislado",
+            fn=run_code.run_code,
             schema={
-                "language": "str (obligatorio) - 'python' o 'node'",
-                "code": "str (opcional) - snippet de código a ejecutar",
-                "file": "str (opcional) - ruta relativa del archivo en workspace",
-                "workspace_dir": "str (opcional, default 'data/workspace')",
-                "timeout_sec": "int (opcional, default 30)",
-                "image": "str (opcional) - override imagen docker",
-                "extra_args": "list[str] (opcional) - argumentos para el script",
+                "language": "Lenguaje: 'python' o 'node' (obligatorio)",
+                "code": "Código a ejecutar (snippet)",
+                "file": "Ruta a archivo de código (alternativa a 'code')",
+                "timeout_sec": "Timeout en segundos (opcional, default 30)",
             },
-            fn=run_code,
         )
     )
 
-    # 5) WEB_SEARCH
-    reg.register(
+    # 5. Web Search
+    registry.register(
         ToolSpec(
             name="web_search",
-            description=(
-                "Busca información en la web usando DuckDuckGo. "
-                "Devuelve título, URL y snippet de los resultados. "
-                "Usa para buscar información actualizada, noticias, tutoriales."
-            ),
+            description="Busca información en internet usando DuckDuckGo",
+            fn=web_search.run_web_search,
             schema={
-                "query": "str (obligatorio) - consulta de búsqueda",
-                "limit": "int (opcional, default 5, max 10) - número de resultados",
+                "query": "Término de búsqueda (obligatorio)",
+                "limit": "Número de resultados (opcional, default 5, max 10)",
             },
-            fn=run_web_search,
         )
     )
 
-    return reg
+    # 6. Spotify
+    registry.register(
+        ToolSpec(
+            name="spotify",
+            description="Controla Spotify: play, pause, next, previous, status, volume_up, volume_down",
+            fn=spotify.spotify_control,
+            schema={
+                "action": "Acción: play, pause, next, previous, status, volume_up, volume_down (obligatorio)",
+            },
+        )
+    )
+
+    # 7. Calendar
+    registry.register(
+        ToolSpec(
+            name="calendar",
+            description="Consulta el calendario de macOS: today, tomorrow, week, create (recordatorio)",
+            fn=calendar.calendar_query,
+            schema={
+                "action": "Acción: today, tomorrow, week, create (obligatorio)",
+                "query": "Texto para búsqueda o título del recordatorio (para 'create')",
+            },
+        )
+    )
+
+    # 8. Email
+    registry.register(
+        ToolSpec(
+            name="send_email",
+            description="Envía emails usando Mail.app de macOS",
+            fn=email.send_email,
+            schema={
+                "to": "Destinatario (email, obligatorio)",
+                "subject": "Asunto del email (obligatorio)",
+                "body": "Cuerpo del mensaje",
+                "action": "send o draft (opcional, default send)",
+            },
+        )
+    )
+
+    return registry

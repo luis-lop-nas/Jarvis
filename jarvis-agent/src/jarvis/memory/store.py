@@ -1,18 +1,7 @@
 """
 store.py
 
-Memoria persistente con SQLite.
-
-Qué hace:
-- inicializa la DB si no existe (aplicando schema.sql)
-- crea sesiones
-- guarda mensajes (user/assistant/tool)
-- guarda eventos de tools (args/result)
-
-En el “gran update final” lo conectaremos al agente para:
-- persistir historial
-- registrar tool calls
-- rehidratar contexto al arrancar
+Gestión de memoria persistente en SQLite.
 """
 
 from __future__ import annotations
@@ -20,56 +9,61 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
-def _now() -> str:
-    """Timestamp ISO para SQLite."""
-    return datetime.now().isoformat(timespec="seconds")
-
-
-@dataclass
 class MemoryStore:
-    db_path: Path
-    schema_path: Path
-
-    def connect(self) -> sqlite3.Connection:
-        """Abre conexión SQLite (crea carpeta si hace falta)."""
+    """Store de memoria persistente."""
+    
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def init_db(self) -> None:
-        """Crea tablas si no existen usando schema.sql."""
-        schema_sql = self.schema_path.read_text(encoding="utf-8")
-        with self.connect() as conn:
-            conn.executescript(schema_sql)
+        self._init_db()
+    
+    def _init_db(self) -> None:
+        """Inicializa la base de datos con el schema."""
+        schema_path = Path(__file__).parent / "schema.sql"
+        
+        with sqlite3.connect(self.db_path) as conn:
+            with open(schema_path, 'r') as f:
+                conn.executescript(f.read())
             conn.commit()
-
+    
     def create_session(self) -> str:
-        """Crea una sesión nueva y devuelve session_id."""
+        """Crea una nueva sesión y retorna su ID."""
         session_id = str(uuid.uuid4())
-        with self.connect() as conn:
+        timestamp = datetime.now().isoformat()
+        
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, created_at) VALUES (?, ?)",
-                (session_id, _now()),
+                (session_id, timestamp)
             )
             conn.commit()
+        
         return session_id
-
-    def add_message(self, session_id: str, role: str, content: str) -> None:
-        """Guarda un mensaje en la sesión (role=user/assistant/tool)."""
-        with self.connect() as conn:
+    
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+    ) -> None:
+        """Añade un mensaje a la sesión."""
+        timestamp = datetime.now().isoformat()
+        
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, _now()),
+                """
+                INSERT INTO messages (session_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, role, content, timestamp)
             )
             conn.commit()
-
+    
     def add_tool_event(
         self,
         session_id: str,
@@ -77,32 +71,70 @@ class MemoryStore:
         tool_args: Dict[str, Any],
         tool_result: Dict[str, Any],
     ) -> None:
-        """Guarda un evento de tool (args + result en JSON)."""
-        with self.connect() as conn:
+        """Registra un evento de uso de herramienta."""
+        timestamp = datetime.now().isoformat()
+        
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO tool_events (session_id, tool_name, tool_args, tool_result, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT INTO tool_events 
+                (session_id, tool_name, tool_args, tool_result, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
                 (
                     session_id,
                     tool_name,
-                    json.dumps(tool_args, ensure_ascii=False),
-                    json.dumps(tool_result, ensure_ascii=False),
-                    _now(),
-                ),
+                    json.dumps(tool_args),
+                    json.dumps(tool_result),
+                    timestamp
+                )
             )
             conn.commit()
-
-    def get_recent_messages(self, session_id: str, limit: int = 30) -> List[Dict[str, Any]]:
-        """
-        Devuelve los últimos N mensajes en orden cronológico (role, content, created_at).
-        """
-        limit = max(1, min(int(limit), 500))
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT role, content, created_at FROM messages "
-                "WHERE session_id=? ORDER BY id DESC LIMIT ?",
-                (session_id, limit),
-            ).fetchall()
-
-        # Están en orden inverso, los devolvemos en orden normal
-        return [dict(r) for r in reversed(rows)]
+    
+    def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Obtiene todos los mensajes de una sesión."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT role, content, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                """,
+                (session_id,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_recent_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Obtiene las sesiones más recientes."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT s.id, s.created_at, COUNT(m.id) as message_count
+                FROM sessions s
+                LEFT JOIN messages m ON s.id = m.session_id
+                GROUP BY s.id
+                ORDER BY s.created_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def search_messages(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Busca mensajes que contengan el query."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """
+                SELECT m.session_id, m.role, m.content, m.created_at
+                FROM messages m
+                WHERE m.content LIKE ?
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (f"%{query}%", limit)
+            )
+            return [dict(row) for row in cursor.fetchall()]
