@@ -3,17 +3,13 @@ cli.py
 
 Interfaz de terminal (CLI) para Jarvis.
 
-Objetivo V1:
-- Tener un bucle interactivo sólido (tipo chat)
-- Comandos básicos para inspección y depuración
-- Logging a archivo (para trazas y futura memoria)
-- Punto único donde, más adelante, conectaremos:
-    - Agente (GPT-5 Codex)
-    - Tools (run_code, web_search, open_app, etc.)
-    - Voz (cuando el wake word dispare una "consulta")
-
-Este módulo NO debe contener lógica de tools ni del modelo.
-Solo UI y enrutado básico.
+Qué hace:
+- Bucle interactivo tipo chat
+- Comandos básicos (/help, /exit, /clear, /paths, /debug, /reset)
+- Logging a archivo por sesión (data/logs/session_....log)
+- Conecta con el agente con herramientas (ToolAgent):
+  - El modelo puede pedir ejecutar tools (por ahora: shell)
+  - Jarvis ejecuta la tool y devuelve el resultado al modelo
 """
 
 from __future__ import annotations
@@ -25,6 +21,8 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+
+from jarvis.agent.tool_agent import tool_agent_from_settings
 
 
 # ---------------------------
@@ -75,10 +73,16 @@ def _print_help(console: Console) -> None:
                     "  [cyan]/clear[/cyan]    - limpiar pantalla",
                     "  [cyan]/paths[/cyan]    - ver rutas del proyecto (data/logs/workspace/db)",
                     "  [cyan]/debug[/cyan]    - ver estado de debug",
+                    "  [cyan]/reset[/cyan]    - borra la memoria de sesión del agente (historial)",
                     "",
                     "[b]Uso:[/b]",
                     "  Escribe una petición normal y Jarvis responderá.",
-                    "  (De momento responde en modo placeholder; luego lo conectamos al agente GPT-5 Codex).",
+                    "  Si hace falta, llamará tools (por ahora: shell) para ejecutar acciones.",
+                    "",
+                    "[b]Ejemplos:[/b]",
+                    "  - 'Haz un ls de la carpeta actual'",
+                    "  - 'Crea una carpeta llamada test y dime qué hay dentro'",
+                    "  - 'Busca mi versión de node' (cuando añadamos tool de node o usando shell)",
                 ]
             ),
             title="Jarvis CLI",
@@ -92,6 +96,7 @@ def _handle_command(
     console: Console,
     settings: Any,
     paths: Any,
+    agent: Any,
 ) -> bool:
     """
     Maneja comandos internos.
@@ -115,7 +120,6 @@ def _handle_command(
         return True
 
     if cmd == "/paths":
-        # paths es el dataclass Paths (config.py)
         text = "\n".join(
             [
                 f"[b]project_root[/b]: {paths.project_root}",
@@ -132,29 +136,17 @@ def _handle_command(
         console.print(Panel(f"debug = {getattr(settings, 'debug', False)}", title="Debug"))
         return True
 
+    if cmd == "/reset":
+        # Borra el historial en memoria (memoria corta de sesión)
+        try:
+            agent.state.clear()
+            console.print("[green]Memoria de sesión borrada.[/green]")
+        except Exception:
+            console.print("[yellow]No se pudo borrar la memoria (estado no disponible).[/yellow]")
+        return True
+
     console.print("[red]Comando no reconocido.[/red] Usa /help.")
     return True
-
-
-# ---------------------------
-# Respuesta placeholder (por ahora)
-# ---------------------------
-
-def _placeholder_response(user_text: str) -> str:
-    """
-    Mientras aún no conectamos el agente (GPT-5 Codex), devolvemos una respuesta simple.
-
-    En el siguiente paso, este método se sustituirá por algo tipo:
-      response = agent.run(user_text)
-    """
-    user_text = user_text.strip()
-    if not user_text:
-        return "No he recibido nada. Prueba a escribir una petición."
-    return (
-        "🛠️ (placeholder) He recibido: "
-        f"'{user_text}'.\n"
-        "Cuando conectemos el agente, aquí decidiré acciones (tools) y te responderé."
-    )
 
 
 # ---------------------------
@@ -167,56 +159,8 @@ def run_cli(*, settings: Any, paths: Any) -> None:
 
     - settings: objeto Settings de config.py
     - paths: objeto Paths de config.py
-
-    Este método no devuelve nada: controla la sesión CLI.
     """
     console = Console()
 
-    # Archivo de log por sesión
-    session_log = _make_session_log_path(paths.logs_dir)
-
-    # Mensaje de bienvenida
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    "[b]Jarvis Agent[/b] (V1)",
-                    "",
-                    "✅ CLI listo. Próximo paso: conectar agente GPT-5 Codex + tools.",
-                    "💡 Escribe [cyan]/help[/cyan] para ver comandos.",
-                ]
-            ),
-            title="Bienvenido",
-        )
-    )
-
-    _safe_write_line(session_log, f"[{_timestamp()}] Session started")
-
-    # Bucle principal
-    while True:
-        try:
-            user_text = Prompt.ask("[bold cyan]Tú[/bold cyan]").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Interrumpido. Saliendo...[/yellow]")
-            break
-
-        # Log de entrada
-        _safe_write_line(session_log, f"[{_timestamp()}] USER: {user_text}")
-
-        # Si es comando (/algo), lo gestionamos
-        if user_text.startswith("/"):
-            keep_running = _handle_command(user_text, console=console, settings=settings, paths=paths)
-            if not keep_running:
-                break
-            continue
-
-        # Respuesta (por ahora placeholder)
-        jarvis_text = _placeholder_response(user_text)
-
-        # Mostrar
-        console.print(Panel(jarvis_text, title="Jarvis"))
-
-        # Log de salida
-        _safe_write_line(session_log, f"[{_timestamp()}] JARVIS: {jarvis_text}")
-
-    _safe_write_line(session_log, f"[{_timestamp()}] Session ended")
+    # Creamos el agente con tools una vez por sesión.
+    # Por ahora solo está registrada la tool "shell".

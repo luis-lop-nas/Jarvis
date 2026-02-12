@@ -1,0 +1,12 @@
+# Sandbox Python para ejecutar snippets/proyectos dentro de /workspace
+FROM python:3.12-slim
+
+WORKDIR /workspace
+
+# (Opcional) utilidades básicas
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Por defecto solo muestra versión; la tool run_code ejecuta su propio comando
+CMD ["python", "--version"]
