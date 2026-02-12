@@ -40,7 +40,6 @@ class ToolRegistry:
             return {"ok": False, "error": f"Tool desconocida: {name}"}
 
         try:
-            # Todas las funciones reciben args como dict
             return spec.fn(args)
         except TypeError as e:
             return {"ok": False, "error": f"Argumentos inválidos: {e}"}
@@ -59,6 +58,7 @@ def build_default_registry() -> ToolRegistry:
         spotify,
         calendar,
         email,
+        vision,
     )
 
     registry = ToolRegistry()
@@ -172,6 +172,20 @@ def build_default_registry() -> ToolRegistry:
                 "subject": "Asunto del email (obligatorio)",
                 "body": "Cuerpo del mensaje",
                 "action": "send o draft (opcional, default send)",
+            },
+        )
+    )
+
+    # 9. Vision (NUEVO)
+    registry.register(
+        ToolSpec(
+            name="vision",
+            description="Analiza lo que hay en pantalla. Puede describir, responder preguntas, o leer texto (OCR)",
+            fn=vision.vision_command,
+            schema={
+                "action": "describe, answer, read, context (obligatorio)",
+                "question": "Pregunta sobre la pantalla (para action='answer')",
+                "capture_mode": "full o window (opcional, default full)",
             },
         )
     )
