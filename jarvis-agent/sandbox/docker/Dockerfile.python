@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+    numpy \
+    pandas \
+    requests \
+    matplotlib \
+    pillow
+
+WORKDIR /workspace
+
+RUN useradd -m jarvis && \
+    chown -R jarvis:jarvis /workspace
+
+USER jarvis
+
+ENTRYPOINT ["python"]
