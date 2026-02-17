@@ -20,6 +20,7 @@ from jarvis.config import load_settings
 from jarvis.agent.tool_agent import tool_agent_from_settings
 from jarvis.memory.store import MemoryStore
 from jarvis.voice.stt import STT, STTConfig
+from jarvis.voice.tts import TTS, TTSConfig
 
 
 app = FastAPI(title="Jarvis Web Interface")
@@ -32,28 +33,46 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 _agent = None
 _memory_store = None
 _stt = None
+_tts = None
 
 
 def get_agent():
     """Inicializa el agente si no existe."""
     global _agent, _memory_store
-    
+
     if _agent is None:
         settings, paths = load_settings()
         _memory_store = MemoryStore(paths.db_path)
         _agent = tool_agent_from_settings(settings, memory_store=_memory_store)
-    
+
     return _agent
 
 
 def get_stt():
     """Inicializa STT si no existe."""
     global _stt
-    
+
     if _stt is None:
         _stt = STT(STTConfig())
-    
+
     return _stt
+
+
+def get_tts():
+    """Inicializa TTS si no existe."""
+    global _tts
+
+    if _tts is None:
+        settings, _ = load_settings()
+        tts_cfg = TTSConfig(
+            engine=settings.tts_engine,
+            elevenlabs_api_key=settings.elevenlabs_api_key,
+            elevenlabs_voice_id=settings.elevenlabs_voice_id,
+            elevenlabs_model=settings.elevenlabs_model,
+        )
+        _tts = TTS(tts_cfg)
+
+    return _tts
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -180,8 +199,8 @@ async def websocket_endpoint(websocket: WebSocket):
             })
             
             try:
-                response = agent.run(user_message)
-                
+                response = await asyncio.to_thread(agent.run, user_message)
+
                 await websocket.send_json({
                     "type": "assistant_message",
                     "content": response
@@ -197,6 +216,41 @@ async def websocket_endpoint(websocket: WebSocket):
         print("Cliente desconectado")
     except Exception as e:
         print(f"Error WebSocket: {e}")
+
+
+@app.post("/speak")
+async def speak_text(request: dict):
+    """Convierte texto a voz usando TTS."""
+    try:
+        text = request.get("text", "").strip()
+
+        if not text:
+            return JSONResponse({
+                "ok": False,
+                "error": "Texto vacío"
+            })
+
+        tts = get_tts()
+
+        # Ejecutar TTS en thread separado para no bloquear
+        result = await asyncio.to_thread(tts.speak, text)
+
+        if result.get("returncode") == 0:
+            return JSONResponse({
+                "ok": True,
+                "message": "Audio reproducido"
+            })
+        else:
+            return JSONResponse({
+                "ok": False,
+                "error": result.get("stderr", "Error desconocido")
+            })
+
+    except Exception as e:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Error: {str(e)}"
+        }, status_code=500)
 
 
 @app.get("/health")

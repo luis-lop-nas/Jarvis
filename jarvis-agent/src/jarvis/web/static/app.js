@@ -1,14 +1,15 @@
-// JARVIS - JavaScript con Nube de Puntos 3D Interactiva Ultra Optimizada
-let currentView = 'home';
+// JARVIS - Sistema completo
 let ws = null;
 let isConnected = false;
 
-// DOM Elements
-const particlesCanvas = document.getElementById('particles');
-const chatInput = document.getElementById('chatInput');
-const sendBtn = document.getElementById('sendBtn');
-const messagesList = document.getElementById('messagesList');
-const typingIndicator = document.getElementById('typingIndicator');
+// Estados de JARVIS
+let jarvisState = 'idle';
+let isTyping = false;
+let chatContainer = null;
+
+// Wake word recognition
+let recognition = null;
+let isWakeWordListening = false;
 
 // ============================================
 // INICIALIZACIÓN
@@ -17,16 +18,15 @@ const typingIndicator = document.getElementById('typingIndicator');
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 JARVIS UI Loaded');
     initInteractiveParticles();
-    setupEventListeners();
-    positionOrbitalMenu();
     connect();
 });
 
 // ============================================
-// NUBE DE PUNTOS 3D INTERACTIVA ULTRA OPTIMIZADA
+// NUBE DE PUNTOS 3D
 // ============================================
 
 function initInteractiveParticles() {
+    const particlesCanvas = document.getElementById('particles');
     if (!particlesCanvas) return;
     
     const ctx = particlesCanvas.getContext('2d');
@@ -35,11 +35,10 @@ function initInteractiveParticles() {
     
     const particles = [];
     const sphereParticleCount = 1200;
-    const floatingParticleCount = 200;
+    const floatingParticleCount = 400;
     let mouse = { x: particlesCanvas.width / 2, y: particlesCanvas.height / 2 };
     
-    // Estados de JARVIS
-    let jarvisState = 'idle'; // idle, compact, active
+    // Estados de animación
     let targetCenterX = particlesCanvas.width / 2;
     let targetCenterY = particlesCanvas.height / 2;
     let currentCenterX = targetCenterX;
@@ -48,23 +47,17 @@ function initInteractiveParticles() {
     let currentRadius = 180;
     let targetCompactness = 0.8;
     let currentCompactness = 0.8;
-    let isTyping = false;
-    let typingVibration = 0;
     
-    // Centro de la esfera
     let centerX = particlesCanvas.width / 2;
     let centerY = particlesCanvas.height / 2;
     let sphereRadius = 180;
     
-    // Azul eléctrico
     const ELECTRIC_BLUE = '0, 180, 255';
     const BRIGHT_BLUE = '100, 220, 255';
-    
-    // Precalcular constantes
     const MOUSE_RADIUS_SQ = 22500;
     const MOUSE_RADIUS = 150;
     
-    // Seguir el ratón (throttled)
+    // Seguir el ratón
     let mouseUpdateScheduled = false;
     particlesCanvas.addEventListener('mousemove', (e) => {
         if (!mouseUpdateScheduled) {
@@ -77,69 +70,125 @@ function initInteractiveParticles() {
         }
     });
     
-    // Click en el canvas para activar JARVIS
+    // Click para activar
     particlesCanvas.addEventListener('click', (e) => {
-        const dx = e.clientX - currentCenterX;
-        const dy = e.clientY - currentCenterY;
+        const dx = e.clientX - targetCenterX;
+        const dy = e.clientY - targetCenterY;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance < currentRadius && jarvisState === 'idle') {
+
+        if (distance < targetRadius * 1.2 && jarvisState === 'idle') {
             jarvisState = 'compact';
-            targetRadius = 150;
+            targetRadius = 110;
             targetCompactness = 1.0;
-            
+
             setTimeout(() => {
                 showSearchBar();
-            }, 1500); // Más tiempo para ver la transición
+            }, 400);
         }
     });
     
-    // Función para mostrar barra de búsqueda
+    // Mostrar barra de búsqueda
     function showSearchBar() {
+        // Crear contenedor de chat
+        chatContainer = document.createElement('div');
+        chatContainer.id = 'chatContainer';
+        document.body.appendChild(chatContainer);
+
+        // Crear barra
         const searchBar = document.createElement('div');
         searchBar.id = 'jarvisSearchBar';
-        
+
         const input = document.createElement('input');
         input.type = 'text';
         input.id = 'jarvisSearchInput';
         input.placeholder = 'Pregúntame lo que quieras...';
-        input.style.cssText = `
-            width: 600px;
-            max-width: 90%;
-            padding: 15px 20px;
-            font-size: 16px;
-            background: rgba(0, 0, 0, 0.7);
-            border: 2px solid rgba(0, 180, 255, 0.5);
-            border-radius: 25px;
-            color: white;
-            outline: none;
-            font-family: 'Inter', sans-serif;
-            transition: all 1.2s cubic-bezier(0.23, 1, 0.32, 1);
-            backdrop-filter: blur(10px);
-        `;
-        
-        searchBar.style.cssText = `
-            position: fixed;
-            bottom: 40px;
-            left: 50%;
-            transform: translateX(-50%) translateY(20px);
-            z-index: 1000;
-            opacity: 0;
-            transition: all 1.2s cubic-bezier(0.23, 1, 0.32, 1);
-        `;
-        
+
+        // Botón de micrófono
+        const micBtn = document.createElement('button');
+        micBtn.id = 'jarvisMicBtn';
+        micBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>';
+
+        // Botón de enviar
+        const sendBtn = document.createElement('button');
+        sendBtn.id = 'jarvisSendBtn';
+        sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+
         searchBar.appendChild(input);
+        searchBar.appendChild(sendBtn);
+        searchBar.appendChild(micBtn);
         document.body.appendChild(searchBar);
-        
-        // Animación de entrada MUY suave
-        requestAnimationFrame(() => {
-            setTimeout(() => {
-                searchBar.style.opacity = '1';
-                searchBar.style.transform = 'translateX(-50%) translateY(0)';
-            }, 50);
+
+        // Animación de entrada
+        setTimeout(() => {
+            searchBar.style.opacity = '1';
+            searchBar.style.transform = 'translateX(-50%) scale(1)';
+        }, 50);
+
+        // --- Micrófono ---
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+
+        micBtn.addEventListener('click', async () => {
+            if (isRecording) {
+                // Parar grabación
+                mediaRecorder.stop();
+                return;
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    isRecording = false;
+                    micBtn.classList.remove('recording');
+                    stream.getTracks().forEach(t => t.stop());
+
+                    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                    if (blob.size < 1000) return;
+
+                    // Enviar a transcribir
+                    micBtn.classList.add('processing');
+                    const formData = new FormData();
+                    formData.append('audio', blob, 'recording.webm');
+
+                    try {
+                        const res = await fetch('/transcribe', { method: 'POST', body: formData });
+                        const data = await res.json();
+                        if (data.ok && data.text) {
+                            input.value = data.text;
+                            input.dispatchEvent(new Event('input'));
+                            input.focus();
+                        }
+                    } catch (err) {
+                        console.error('Error transcribiendo:', err);
+                    }
+                    micBtn.classList.remove('processing');
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                micBtn.classList.add('recording');
+            } catch (err) {
+                console.error('Error accediendo al micrófono:', err);
+            }
         });
-        
-        // Enviar mensaje al presionar Enter
+
+        // Eventos del input y enviar
+        sendBtn.addEventListener('click', () => {
+            if (input.value.trim()) {
+                sendMessageToJarvis(input.value.trim());
+                input.value = '';
+                isTyping = false;
+            }
+        });
+
         input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && input.value.trim()) {
                 sendMessageToJarvis(input.value.trim());
@@ -147,210 +196,469 @@ function initInteractiveParticles() {
                 isTyping = false;
             }
         });
-        
-        // Activar cuando empieza a escribir
+
         input.addEventListener('input', () => {
             if (input.value.length > 0) {
                 isTyping = true;
                 if (jarvisState === 'compact') {
                     jarvisState = 'active';
-                    targetCenterX = 120;
-                    targetCenterY = 120;
-                    targetRadius = 60;
+                    targetCenterX = 70;
+                    targetCenterY = 70;
+                    targetRadius = 40;
+                    chatContainer.classList.add('active');
                 }
             } else {
                 isTyping = false;
             }
         });
-        
-        input.addEventListener('focus', () => {
-            input.style.borderColor = 'rgba(0, 180, 255, 1)';
-            input.style.boxShadow = '0 0 20px rgba(0, 180, 255, 0.5)';
-        });
-        
-        input.addEventListener('blur', () => {
-            input.style.borderColor = 'rgba(0, 180, 255, 0.5)';
-            input.style.boxShadow = 'none';
-        });
-        
+
         setTimeout(() => input.focus(), 100);
+
+        // Iniciar escucha de wake word
+        initWakeWordDetection(input);
     }
-    
-    // Función para enviar mensaje a JARVIS
+
+    // Wake word detection usando Web Speech API
+    function initWakeWordDetection(inputElement) {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            console.log('⚠️ Web Speech API no disponible');
+            return;
+        }
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.lang = 'es-ES';
+
+        recognition.onresult = (event) => {
+            const last = event.results.length - 1;
+            const transcript = event.results[last][0].transcript.toLowerCase().trim();
+
+            console.log('🎤 Escuchado:', transcript);
+
+            // Detectar wake word "jarvis"
+            if (transcript.includes('jarvis')) {
+                console.log('✅ Wake word detectado!');
+
+                // Detener reconocimiento continuo
+                if (isWakeWordListening) {
+                    recognition.stop();
+                    isWakeWordListening = false;
+                }
+
+                // Activar micrófono para comando
+                const micBtn = document.getElementById('jarvisMicBtn');
+                if (micBtn) {
+                    micBtn.click();
+                }
+            }
+        };
+
+        recognition.onend = () => {
+            // Reiniciar automáticamente si estaba escuchando
+            if (isWakeWordListening) {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.log('Wake word ya está activo');
+                }
+            }
+        };
+
+        recognition.onerror = (event) => {
+            if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                console.error('Error reconocimiento:', event.error);
+            }
+        };
+
+        // Botón para activar/desactivar wake word
+        const wakeBtn = document.createElement('button');
+        wakeBtn.id = 'jarvisWakeBtn';
+        wakeBtn.className = 'wake-word-btn';
+        wakeBtn.title = 'Escuchar "Jarvis"';
+        wakeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>';
+
+        wakeBtn.addEventListener('click', () => {
+            if (isWakeWordListening) {
+                // Detener
+                recognition.stop();
+                isWakeWordListening = false;
+                wakeBtn.classList.remove('active');
+                console.log('🛑 Wake word desactivado');
+            } else {
+                // Iniciar
+                try {
+                    recognition.start();
+                    isWakeWordListening = true;
+                    wakeBtn.classList.add('active');
+                    console.log('🎤 Escuchando "Jarvis"...');
+                } catch (e) {
+                    console.log('Wake word ya está activo');
+                }
+            }
+        });
+
+        // Agregar botón a la barra de búsqueda
+        const searchBar = document.getElementById('jarvisSearchBar');
+        if (searchBar) {
+            searchBar.appendChild(wakeBtn);
+        }
+    }
+
+    // Indicador de "pensando"
+    let thinkingEl = null;
+    function showThinking() {
+        if (!chatContainer || thinkingEl) return;
+        thinkingEl = document.createElement('div');
+        thinkingEl.className = 'message assistant thinking';
+        thinkingEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div>';
+        chatContainer.appendChild(thinkingEl);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+    function hideThinking() {
+        if (thinkingEl) {
+            thinkingEl.remove();
+            thinkingEl = null;
+        }
+    }
+
+    // Enviar mensaje
     function sendMessageToJarvis(message) {
-        console.log('Enviando mensaje:', message);
-        
+        console.log('📤 Enviando:', message);
+
+        // Mostrar mensaje del usuario
+        addMessage(message, 'user');
+
         if (isConnected && ws) {
             ws.send(JSON.stringify({ message }));
-            isTyping = false;
-            
-            // Mostrar indicador de que JARVIS está procesando
-            setTimeout(() => {
-                isTyping = true;
-            }, 100);
+            isTyping = true;
+            showThinking();
         } else {
-            console.log('WebSocket no conectado');
+            console.log('❌ WebSocket no conectado');
+            setTimeout(() => {
+                addMessage('WebSocket no está conectado. Asegúrate de que el servidor esté corriendo.', 'assistant');
+                isTyping = false;
+            }, 500);
         }
     }
     
+    // TTS: Hablar texto usando el servidor
+    async function speakText(text, button) {
+        try {
+            if (button) {
+                button.classList.add('speaking');
+                button.disabled = true;
+            }
+
+            const response = await fetch('/speak', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+
+            const data = await response.json();
+
+            if (!data.ok) {
+                console.error('Error TTS:', data.error);
+            }
+        } catch (error) {
+            console.error('Error llamando TTS:', error);
+        } finally {
+            if (button) {
+                button.classList.remove('speaking');
+                button.disabled = false;
+            }
+        }
+    }
+
+    // Renderizar contenido: Markdown + MathJax
+    function renderContent(text) {
+        let html = text;
+
+        // 1) Proteger bloques LaTeX antes de markdown
+        const latexBlocks = [];
+        // $$...$$
+        html = html.replace(/\$\$([\s\S]*?)\$\$/g, (_, expr) => {
+            const placeholder = `%%LATEX_BLOCK_${latexBlocks.length}%%`;
+            latexBlocks.push({ expr: expr.trim(), display: true });
+            return placeholder;
+        });
+        // $...$
+        html = html.replace(/\$([^\$\n]+?)\$/g, (_, expr) => {
+            const placeholder = `%%LATEX_BLOCK_${latexBlocks.length}%%`;
+            latexBlocks.push({ expr: expr.trim(), display: false });
+            return placeholder;
+        });
+        // \[...\] y \(...\)
+        html = html.replace(/\\\[([\s\S]*?)\\\]/g, (_, expr) => {
+            const placeholder = `%%LATEX_BLOCK_${latexBlocks.length}%%`;
+            latexBlocks.push({ expr: expr.trim(), display: true });
+            return placeholder;
+        });
+        html = html.replace(/\\\(([\s\S]*?)\\\)/g, (_, expr) => {
+            const placeholder = `%%LATEX_BLOCK_${latexBlocks.length}%%`;
+            latexBlocks.push({ expr: expr.trim(), display: false });
+            return placeholder;
+        });
+
+        // 2) Markdown → HTML
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({ breaks: true, gfm: true });
+            html = marked.parse(html);
+        } else {
+            html = html
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/\n/g, '<br>');
+        }
+
+        // 3) Restaurar bloques LaTeX con delimitadores para MathJax
+        for (let i = 0; i < latexBlocks.length; i++) {
+            const { expr, display } = latexBlocks[i];
+            const wrapped = display ? `$$${expr}$$` : `$${expr}$`;
+            html = html.replace(`%%LATEX_BLOCK_${i}%%`, wrapped);
+        }
+
+        return html;
+    }
+
+    // Agregar mensaje al chat
+    function addMessage(content, type) {
+        if (!chatContainer) return;
+
+        const msgEl = document.createElement('div');
+        msgEl.className = `message ${type}`;
+
+        const textEl = document.createElement('span');
+        textEl.innerHTML = renderContent(content);
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'msg-copy-btn';
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(content).then(() => {
+                copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>';
+                setTimeout(() => {
+                    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+                }, 1500);
+            });
+        });
+
+        // Botón TTS solo para mensajes del asistente
+        let ttsBtn = null;
+        if (type === 'assistant') {
+            ttsBtn = document.createElement('button');
+            ttsBtn.className = 'msg-tts-btn';
+            ttsBtn.title = 'Escuchar mensaje';
+            ttsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+            ttsBtn.addEventListener('click', () => speakText(content, ttsBtn));
+        }
+
+        // Multilínea: botón abajo-derecha; una línea: centrado vertical
+        const isMultiline = content.includes('\n') || content.length > 80;
+        if (isMultiline) {
+            msgEl.classList.add('multiline');
+        }
+
+        msgEl.appendChild(textEl);
+        msgEl.appendChild(copyBtn);
+        if (ttsBtn) {
+            msgEl.appendChild(ttsBtn);
+        }
+        chatContainer.appendChild(msgEl);
+
+        // MathJax: procesar LaTeX en el mensaje recién añadido
+        if (window.MathJax && MathJax.typesetPromise) {
+            MathJax.typesetPromise([msgEl]).catch(() => {});
+        }
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+    
+    // Exponer función globalmente para recibir respuestas
+    window.receiveJarvisMessage = function(content) {
+        hideThinking();
+        addMessage(content, 'assistant');
+        isTyping = false;
+    };
+    
+    // Clase de partícula de esfera
     class SphereParticle {
         constructor(index) {
             const phi = Math.acos(1 - 2 * (index + 0.5) / sphereParticleCount);
             const theta = Math.PI * (1 + Math.sqrt(5)) * index;
-            
+
             this.perfectX = Math.cos(theta) * Math.sin(phi);
             this.perfectY = Math.sin(theta) * Math.sin(phi);
             this.perfectZ = Math.cos(phi);
-            
+
             this.baseX = this.perfectX;
             this.baseY = this.perfectY;
             this.baseZ = this.perfectZ;
-            
             this.x = this.baseX;
             this.y = this.baseY;
             this.z = this.baseZ;
-            
+
             this.size = Math.random() * 0.8 + 0.5;
             this.isSphere = true;
-            
-            this.interactsWithMouse = Math.random() > 0.6;
-            
-            // Vibración orgánica individual - MUY SUTIL
-            this.vibrationPhase = Math.random() * Math.PI * 2;
-            this.vibrationSpeed = Math.random() * 0.04 + 0.05; // MUY lento
-            this.vibrationAmplitude = Math.random() * 0.8 + 0.4; // MUY pequeña
-            
-            this.noiseOffset = Math.random() * 1000;
-            this.noiseSpeed = Math.random() * 0.0001 + 0.00005; // EXTREMADAMENTE lento
-            this.rotSpeedY = (Math.random() - 0.5) * 0.0008; // EXTREMADAMENTE lento
-            this.rotSpeedX = (Math.random() - 0.5) * 0.0006; // EXTREMADAMENTE lento
+
+            // Transición individual - velocidad MUY variada para dispersión
+            this.localCenterX = targetCenterX;
+            this.localCenterY = targetCenterY;
+            this.localRadius = targetRadius;
+            // Distribución amplia: pocas muy rápidas, muchas medianas, algunas rezagadas
+            const r = Math.random();
+            this.transitionSpeed = 0.015 + r * r * 0.12;
+            // Desvío curvo: ángulo aleatorio y magnitud grande → caminos muy distintos
+            const deviationAngle = Math.random() * Math.PI * 2;
+            const deviationMag = Math.random() * 350 + 100;
+            this.pathDeviationX = Math.cos(deviationAngle) * deviationMag;
+            this.pathDeviationY = Math.sin(deviationAngle) * deviationMag;
+            // Cada partícula tiene su propia "curva" (cuántas oscilaciones hace en el camino)
+            this.pathWobbleFreq = Math.random() * 2 + 0.5;
+            this.pathPhase = 0;
+
+            // Movimiento orgánico (ondas superpuestas) - más rápido en idle
+            this.driftPhaseX1 = Math.random() * Math.PI * 2;
+            this.driftPhaseX2 = Math.random() * Math.PI * 2;
+            this.driftPhaseY1 = Math.random() * Math.PI * 2;
+            this.driftPhaseY2 = Math.random() * Math.PI * 2;
+            this.driftPhaseZ1 = Math.random() * Math.PI * 2;
+            this.driftPhaseZ2 = Math.random() * Math.PI * 2;
+            this.driftFreqX1 = Math.random() * 0.018 + 0.006;
+            this.driftFreqX2 = Math.random() * 0.028 + 0.012;
+            this.driftFreqY1 = Math.random() * 0.016 + 0.006;
+            this.driftFreqY2 = Math.random() * 0.025 + 0.01;
+            this.driftFreqZ1 = Math.random() * 0.014 + 0.005;
+            this.driftFreqZ2 = Math.random() * 0.022 + 0.008;
+            this.driftAmplitude = Math.random() * 0.08 + 0.03;
+
+            // Rotación - un poco más rápida
+            this.rotSpeedY = (Math.random() - 0.5) * 0.0008;
+            this.rotSpeedX = (Math.random() - 0.5) * 0.0006;
             this.rotY = Math.random() * Math.PI * 2;
             this.rotX = Math.random() * Math.PI * 2;
-            this.reactionStrength = Math.random() * 0.8 + 0.4;
             this.pulseOffset = Math.random() * Math.PI * 2;
-            this.pulseSpeed = Math.random() * 0.008 + 0.005; // MUY lento
-            
+            this.pulseSpeed = Math.random() * 0.004 + 0.001;
+
             this.screenX = 0;
             this.screenY = 0;
             this.scale = 1;
         }
-        
+
         update(time) {
-            // Transiciones EXTREMADAMENTE SUAVES
-            currentCenterX += (targetCenterX - currentCenterX) * 0.008; // MUY lento
-            currentCenterY += (targetCenterY - currentCenterY) * 0.008; // MUY lento
-            currentRadius += (targetRadius - currentRadius) * 0.008; // MUY lento
-            currentCompactness += (targetCompactness - currentCompactness) * 0.005; // MUY lento
-            
-            centerX = currentCenterX;
-            centerY = currentCenterY;
-            sphereRadius = currentRadius;
-            
-            // Calcular posición base
-            const imperfection = 1 - currentCompactness;
-            const randomOffset = (Math.random() - 0.5) * imperfection;
-            
-            this.baseX = this.perfectX + randomOffset;
-            this.baseY = this.perfectY + randomOffset * 0.8;
-            this.baseZ = this.perfectZ + randomOffset * 0.6;
-            
-            // Vibración orgánica individual - MUY SUTIL
-            let vibrationX = 0;
-            let vibrationY = 0;
-            let vibrationZ = 0;
-            
-            if (isTyping && jarvisState === 'active') {
-                this.vibrationPhase += this.vibrationSpeed;
-                vibrationX = Math.sin(this.vibrationPhase) * this.vibrationAmplitude * 0.008;
-                vibrationY = Math.cos(this.vibrationPhase * 1.3) * this.vibrationAmplitude * 0.008;
-                vibrationZ = Math.sin(this.vibrationPhase * 0.7) * this.vibrationAmplitude * 0.005;
+            // Cada partícula interpola hacia el target a su propio ritmo
+            const dx = targetCenterX - this.localCenterX;
+            const dy = targetCenterY - this.localCenterY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist > 10) {
+                // En transición: camino curvo y sinuoso
+                this.pathPhase += this.transitionSpeed * 0.8;
+                const wobble = Math.sin(this.pathPhase * Math.PI * this.pathWobbleFreq);
+                const distFactor = Math.min(dist / 100, 1);
+                // Velocidad mínima para que las últimas no se arrastren
+                const speed = Math.max(this.transitionSpeed, 0.04);
+                this.localCenterX += dx * speed + this.pathDeviationX * wobble * speed * distFactor * 0.5;
+                this.localCenterY += dy * speed + this.pathDeviationY * wobble * speed * distFactor * 0.5;
+            } else if (dist > 0.5) {
+                // Cerca del destino: snap rápido sin curvas
+                this.localCenterX += dx * 0.15;
+                this.localCenterY += dy * 0.15;
             }
-            
-            // Rotaciones individuales
+            this.localRadius += (targetRadius - this.localRadius) * Math.max(this.transitionSpeed, 0.04) * 1.5;
+
+            // Movimiento orgánico con ondas superpuestas
+            const driftX = Math.sin(time * this.driftFreqX1 + this.driftPhaseX1) * this.driftAmplitude
+                         + Math.sin(time * this.driftFreqX2 + this.driftPhaseX2) * this.driftAmplitude * 0.5;
+            const driftY = Math.sin(time * this.driftFreqY1 + this.driftPhaseY1) * this.driftAmplitude
+                         + Math.sin(time * this.driftFreqY2 + this.driftPhaseY2) * this.driftAmplitude * 0.5;
+            const driftZ = Math.sin(time * this.driftFreqZ1 + this.driftPhaseZ1) * this.driftAmplitude * 0.7
+                         + Math.sin(time * this.driftFreqZ2 + this.driftPhaseZ2) * this.driftAmplitude * 0.35;
+
+            const imperfection = 1 - currentCompactness;
+
+            this.baseX = this.perfectX + driftX * (0.3 + imperfection * 2);
+            this.baseY = this.perfectY + driftY * (0.3 + imperfection * 2);
+            this.baseZ = this.perfectZ + driftZ * (0.3 + imperfection * 2);
+
+            // Rotación
             this.rotY += this.rotSpeedY;
             this.rotX += this.rotSpeedX;
-            
+
             const cosY = Math.cos(this.rotY);
             const sinY = Math.sin(this.rotY);
             const cosX = Math.cos(this.rotX);
             const sinX = Math.sin(this.rotX);
-            
+
             const rx = this.baseX * cosY - this.baseZ * sinY;
             const rz = this.baseX * sinY + this.baseZ * cosY;
             const ry = this.baseY * cosX - rz * sinX;
             const finalZ = this.baseY * sinX + rz * cosX;
-            
-            const noise = Math.sin(time * this.noiseSpeed + this.noiseOffset) * 0.015; // MUY poco ruido
-            
-            this.x = rx + noise + vibrationX;
-            this.y = ry + noise * 0.7 + vibrationY;
-            this.z = finalZ + noise * 0.5 + vibrationZ;
-            
-            // Proyección 2D
-            this.scale = 300 / (300 + this.z * sphereRadius);
-            this.screenX = centerX + this.x * sphereRadius * this.scale;
-            this.screenY = centerY + this.y * sphereRadius * this.scale;
-            
-            // Interacción con ratón
-            if (this.interactsWithMouse && jarvisState === 'idle') {
-                const dx = mouse.x - this.screenX;
-                const dy = mouse.y - this.screenY;
-                const distSq = dx * dx + dy * dy;
-                
-                if (distSq < MOUSE_RADIUS_SQ) {
-                    const dist = Math.sqrt(distSq);
-                    const force = (MOUSE_RADIUS - dist) / MOUSE_RADIUS;
-                    const angle = Math.atan2(dy, dx);
-                    const push = force * 0.4 * this.reactionStrength;
-                    
-                    this.x -= Math.cos(angle) * push * 0.3;
-                    this.y -= Math.sin(angle) * push * 0.3;
-                }
+
+            this.x = rx;
+            this.y = ry;
+            this.z = finalZ;
+
+            // Proyección con posición local
+            this.scale = 300 / (300 + this.z * this.localRadius);
+            this.screenX = this.localCenterX + this.x * this.localRadius * this.scale;
+            this.screenY = this.localCenterY + this.y * this.localRadius * this.scale;
+
+            // Reacción sutil al ratón - TODAS las partículas, siempre
+            const mdx = mouse.x - this.screenX;
+            const mdy = mouse.y - this.screenY;
+            const mDistSq = mdx * mdx + mdy * mdy;
+
+            if (mDistSq < MOUSE_RADIUS_SQ && mDistSq > 1) {
+                const mDist = Math.sqrt(mDistSq);
+                const force = (MOUSE_RADIUS - mDist) / MOUSE_RADIUS;
+                const angle = Math.atan2(mdy, mdx);
+                // Empuje suave: se apartan un poco del cursor
+                this.screenX -= Math.cos(angle) * force * force * 8;
+                this.screenY -= Math.sin(angle) * force * force * 8;
             }
-            
+
             this.pulseOffset += this.pulseSpeed;
         }
-        
+
         draw() {
             const size = this.size * this.scale;
-            
             const depth = (this.z + 1) * 0.5;
-            const dx = mouse.x - this.screenX;
-            const dy = mouse.y - this.screenY;
-            const mouseDist = Math.sqrt(dx * dx + dy * dy);
-            
+            const mdx = mouse.x - this.screenX;
+            const mdy = mouse.y - this.screenY;
+            const mouseDist = Math.sqrt(mdx * mdx + mdy * mdy);
+
             let opacity = 0.7 + depth * 0.2;
             opacity += Math.sin(this.pulseOffset) * 0.25;
-            
+
             if (mouseDist < 200) {
                 opacity += (200 - mouseDist) * 0.002;
             }
             opacity = Math.min(opacity, 1);
-            
+
             const size2 = size * 1.5;
             const size3 = size * 2.5;
-            
-            // Glow exterior
+
             ctx.globalAlpha = opacity * 0.3;
             ctx.fillStyle = `rgb(${ELECTRIC_BLUE})`;
             ctx.beginPath();
             ctx.arc(this.screenX, this.screenY, size3, 0, Math.PI * 2);
             ctx.fill();
-            
-            // Partícula principal
+
             ctx.globalAlpha = opacity * 0.7;
             ctx.fillStyle = `rgb(${BRIGHT_BLUE})`;
             ctx.beginPath();
             ctx.arc(this.screenX, this.screenY, size2, 0, Math.PI * 2);
             ctx.fill();
-            
-            // Núcleo brillante
+
             ctx.globalAlpha = opacity;
             ctx.fillStyle = 'rgb(255, 255, 255)';
             ctx.beginPath();
             ctx.arc(this.screenX, this.screenY, size, 0, Math.PI * 2);
             ctx.fill();
-            
+
             ctx.globalAlpha = 1;
         }
     }
@@ -361,44 +669,64 @@ function initInteractiveParticles() {
             this.y = Math.random() * particlesCanvas.height;
             this.baseX = this.x;
             this.baseY = this.y;
-            this.size = Math.random() * 1.2 + 0.4;
-            this.speedX = (Math.random() - 0.5) * 0.15; // MUY lento
-            this.speedY = (Math.random() - 0.5) * 0.15; // MUY lento
+            this.size = Math.random() * 0.8 + 0.5;
+            this.speedX = (Math.random() - 0.5) * 0.15;
+            this.speedY = (Math.random() - 0.5) * 0.15;
             this.angle = Math.random() * Math.PI * 2;
-            this.angleSpeed = (Math.random() - 0.5) * 0.008; // MUY lento
-            this.orbitRadius = Math.random() * 4 + 2;
-            this.opacity = Math.random() * 0.3 + 0.5;
+            this.angleSpeed = (Math.random() - 0.5) * 0.003;
+            this.orbitRadius = Math.random() * 5 + 2;
+            this.opacity = Math.random() * 0.2 + 0.25;
             this.isSphere = false;
             this.pulseOffset = Math.random() * Math.PI * 2;
-            this.pulseSpeed = Math.random() * 0.01 + 0.005; // MUY lento
+            this.pulseSpeed = Math.random() * 0.004 + 0.001;
         }
-        
+
         update() {
             this.baseX += this.speedX;
             this.baseY += this.speedY;
             this.angle += this.angleSpeed;
             this.pulseOffset += this.pulseSpeed;
-            
+
             this.x = this.baseX + Math.cos(this.angle) * this.orbitRadius;
             this.y = this.baseY + Math.sin(this.angle) * this.orbitRadius;
-            
+
+            // Reacción sutil al cursor
+            const dx = mouse.x - this.x;
+            const dy = mouse.y - this.y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < 40000 && distSq > 1) {
+                const dist = Math.sqrt(distSq);
+                const force = (200 - dist) / 200;
+                const angle = Math.atan2(dy, dx);
+                this.x -= Math.cos(angle) * force * force * 5;
+                this.y -= Math.sin(angle) * force * force * 5;
+            }
+
+            // Wrap suave por los bordes
             if (this.baseX < -50) this.baseX = particlesCanvas.width + 50;
             if (this.baseX > particlesCanvas.width + 50) this.baseX = -50;
             if (this.baseY < -50) this.baseY = particlesCanvas.height + 50;
             if (this.baseY > particlesCanvas.height + 50) this.baseY = -50;
         }
-        
+
         draw() {
-            const pulse = Math.sin(this.pulseOffset) * 0.25;
-            const finalOpacity = Math.min(this.opacity + pulse, 1);
-            const size2 = this.size * 2;
-            
-            ctx.globalAlpha = finalOpacity * 0.5;
+            const pulse = Math.sin(this.pulseOffset) * 0.08;
+            const finalOpacity = this.opacity + pulse;
+
+            // Glow exterior
+            ctx.globalAlpha = finalOpacity * 0.3;
+            ctx.fillStyle = `rgb(${ELECTRIC_BLUE})`;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Punto principal - siempre encendido
+            ctx.globalAlpha = finalOpacity;
             ctx.fillStyle = `rgb(${BRIGHT_BLUE})`;
             ctx.beginPath();
-            ctx.arc(this.x, this.y, size2, 0, Math.PI * 2);
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
             ctx.fill();
-            
+
             ctx.globalAlpha = 1;
         }
     }
@@ -418,9 +746,12 @@ function initInteractiveParticles() {
     let time = 0;
     function animateParticles() {
         time++;
+
+        // Compactness global (afecta el drift orgánico)
+        currentCompactness += (targetCompactness - currentCompactness) * 0.008;
+
         ctx.clearRect(0, 0, particlesCanvas.width, particlesCanvas.height);
         
-        // Conexiones
         if (time % 2 === 0) {
             ctx.globalAlpha = 1;
             for (let i = 0; i < sphereParticles.length; i += 8) {
@@ -469,92 +800,6 @@ function initInteractiveParticles() {
 }
 
 // ============================================
-// ORBITAL MENU POSITIONING
-// ============================================
-
-function positionOrbitalMenu() {
-    const menuItems = document.querySelectorAll('.menu-orbit-item');
-    const radius = 200;
-    const centerX = window.innerWidth / 2;
-    const centerY = window.innerHeight / 2;
-    const angleStep = (Math.PI * 2) / menuItems.length;
-    
-    menuItems.forEach((item, index) => {
-        const angle = angleStep * index - Math.PI / 2;
-        const x = centerX + Math.cos(angle) * radius;
-        const y = centerY + Math.sin(angle) * radius;
-        
-        item.style.left = `${x}px`;
-        item.style.top = `${y}px`;
-    });
-}
-
-// ============================================
-// EVENT LISTENERS
-// ============================================
-
-function setupEventListeners() {
-    const menuItems = document.querySelectorAll('.menu-orbit-item');
-    menuItems.forEach(item => {
-        item.addEventListener('click', () => {
-            const view = item.getAttribute('data-view');
-            navigateToView(view);
-            menuItems.forEach(mi => mi.classList.remove('active'));
-            item.classList.add('active');
-        });
-    });
-    
-    if (chatInput) {
-        chatInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-    }
-    
-    if (sendBtn) {
-        sendBtn.addEventListener('click', sendMessage);
-    }
-    
-    const colorOptions = document.querySelectorAll('.color-option');
-    colorOptions.forEach(option => {
-        option.addEventListener('click', () => {
-            const color = option.getAttribute('data-color');
-            changeThemeColor(color);
-            colorOptions.forEach(opt => opt.classList.remove('active'));
-            option.classList.add('active');
-        });
-    });
-}
-
-// ============================================
-// NAVIGATION
-// ============================================
-
-function navigateToView(viewName) {
-    if (currentView === viewName) return;
-    
-    const currentViewEl = document.getElementById(`${currentView}View`);
-    const newViewEl = document.getElementById(`${viewName}View`);
-    
-    if (!newViewEl) return;
-    
-    if (currentViewEl) {
-        currentViewEl.classList.remove('active');
-    }
-    
-    newViewEl.classList.add('active');
-    currentView = viewName;
-    
-    if (viewName === 'chat' && chatInput) {
-        setTimeout(() => chatInput.focus(), 300);
-    }
-}
-
-window.navigateToView = navigateToView;
-
-// ============================================
 // WEBSOCKET
 // ============================================
 
@@ -570,118 +815,32 @@ function connect() {
         };
         ws.onclose = () => { 
             isConnected = false;
-            console.log('❌ WebSocket desconectado');
+            console.log('❌ WebSocket desconectado - reintentando...');
             setTimeout(connect, 3000);
         };
         ws.onmessage = handleMessage;
+        ws.onerror = (error) => {
+            console.error('❌ WebSocket error:', error);
+        };
     } catch (error) {
-        console.error('WebSocket error:', error);
+        console.error('❌ WebSocket connection error:', error);
+        setTimeout(connect, 3000);
     }
 }
 
 function handleMessage(event) {
     try {
         const data = JSON.parse(event.data);
+        console.log('📥 Mensaje recibido:', data);
         
         if (data.type === 'assistant_message') {
-            hideTypingIndicator();
-            addAssistantMessage(data.content);
-            
-            // JARVIS deja de vibrar cuando termina de responder
-            isTyping = false;
+            if (window.receiveJarvisMessage) {
+                window.receiveJarvisMessage(data.content);
+            }
         }
     } catch (error) {
-        console.error('Message error:', error);
+        console.error('❌ Error procesando mensaje:', error);
     }
-}
-
-// ============================================
-// CHAT FUNCTIONS
-// ============================================
-
-function sendMessage() {
-    const message = chatInput.value.trim();
-    if (!message) return;
-    
-    addUserMessage(message);
-    chatInput.value = '';
-    showTypingIndicator();
-    
-    if (isConnected && ws) {
-        ws.send(JSON.stringify({ message }));
-    } else {
-        setTimeout(() => {
-            hideTypingIndicator();
-            addAssistantMessage('Demo mode - Backend not connected');
-        }, 1000);
-    }
-}
-
-function addUserMessage(content) {
-    const msgEl = document.createElement('div');
-    msgEl.className = 'message user-message';
-    msgEl.innerHTML = `
-        <div class="message-bubble">
-            <p>${escapeHtml(content)}</p>
-            <span class="message-time">${getTime()}</span>
-        </div>
-    `;
-    messagesList.appendChild(msgEl);
-    scrollToBottom(messagesList.parentElement);
-}
-
-function addAssistantMessage(content) {
-    const msgEl = document.createElement('div');
-    msgEl.className = 'message assistant-message';
-    msgEl.innerHTML = `
-        <div class="message-avatar">
-            <div class="mini-orb"></div>
-        </div>
-        <div class="message-bubble">
-            <p>${escapeHtml(content)}</p>
-            <span class="message-time">${getTime()}</span>
-        </div>
-    `;
-    messagesList.appendChild(msgEl);
-    scrollToBottom(messagesList.parentElement);
-}
-
-function showTypingIndicator() {
-    if (typingIndicator) typingIndicator.classList.add('active');
-}
-
-function hideTypingIndicator() {
-    if (typingIndicator) typingIndicator.classList.remove('active');
-}
-
-// ============================================
-// THEME
-// ============================================
-
-function changeThemeColor(color) {
-    document.documentElement.style.setProperty('--primary', color);
-}
-
-// ============================================
-// UTILITIES
-// ============================================
-
-function scrollToBottom(el) {
-    if (!el) return;
-    requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
-    });
-}
-
-function getTime() {
-    const now = new Date();
-    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 console.log('✨ JARVIS - All systems operational');

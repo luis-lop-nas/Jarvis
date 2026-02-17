@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     porcupine_access_key: str = Field(default="", alias="PORCUPINE_ACCESS_KEY")
     wake_word: str = Field(default="jarvis", alias="WAKE_WORD")
 
+    # --- ElevenLabs TTS ---
+    elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: str = Field(default="", alias="ELEVENLABS_VOICE_ID")
+    elevenlabs_model: str = Field(default="eleven_multilingual_v2", alias="ELEVENLABS_MODEL")
+    tts_engine: str = Field(default="elevenlabs", alias="TTS_ENGINE")  # elevenlabs, piper, macos
+
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
 

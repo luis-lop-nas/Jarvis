@@ -39,6 +39,17 @@ dependencies = [
 
   # --- Utilidades varias ---
   "requests>=2.32.3",            # HTTP básico (por si haces un buscador simple)
+
+  # --- Web server ---
+  "fastapi>=0.111.0",            # Servidor web async
+  "uvicorn[standard]>=0.30.0",   # ASGI server
+  "python-multipart>=0.0.9",     # Upload de archivos (FastAPI)
+
+  # --- Groq API ---
+  "groq>=0.9.0",                 # SDK Groq para LLM rápido
+
+  # --- ElevenLabs TTS ---
+  "elevenlabs>=1.0.0",           # SDK ElevenLabs para TTS de alta calidad
 ]
 
 [project.optional-dependencies]

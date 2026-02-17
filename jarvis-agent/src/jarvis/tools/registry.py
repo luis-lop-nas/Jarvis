@@ -61,6 +61,8 @@ def build_default_registry() -> ToolRegistry:
         vision,
         code_assistant,
         knowledge,
+        organize_files,
+        download_file,
     )
 
     registry = ToolRegistry()
@@ -84,13 +86,15 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="filesystem",
-            description="Opera sobre archivos: write_text, read_text, list_dir, mkdir, exists, delete",
+            description="Opera sobre archivos: write_text, read_text, list_dir, mkdir, exists, delete, rename, move, copy. Puede trabajar en todo el sistema del usuario.",
             fn=filesystem.run_filesystem,
             schema={
-                "action": "write_text, read_text, list_dir, mkdir, exists, delete (obligatorio)",
-                "path": "Ruta relativa al workspace (obligatorio)",
+                "action": "write_text, read_text, list_dir, mkdir, exists, delete, rename, move, copy (obligatorio)",
+                "path": "Ruta del archivo/carpeta (puede ser absoluta, ej: ~/Desktop/archivo.txt)",
                 "content": "Contenido (para write_text)",
-                "recursive": "Recursivo (bool, para delete/mkdir)",
+                "new_name": "Nuevo nombre (para rename)",
+                "destination": "Ruta de destino (para move/copy)",
+                "recursive": "Recursivo (bool, para delete/copy)",
             },
         )
     )
@@ -207,7 +211,7 @@ def build_default_registry() -> ToolRegistry:
         )
     )
 
-    # 11. Knowledge Base (NUEVO)
+    # 11. Knowledge Base
     registry.register(
         ToolSpec(
             name="knowledge",
@@ -223,6 +227,53 @@ def build_default_registry() -> ToolRegistry:
                 "tags": "Tags separados por comas (para add_code)",
                 "doc_id": "ID del documento (para delete)",
                 "n_results": "Número de resultados (para search, default 3)",
+            },
+        )
+    )
+
+    # 12. Organize Files
+    registry.register(
+        ToolSpec(
+            name="organize_files",
+            description="Organiza archivos automáticamente por tipo, fecha o de forma inteligente. Mueve archivos a carpetas apropiadas sin preguntar.",
+            fn=organize_files.run_organize_files,
+            schema={
+                "source_dir": "Directorio a organizar (ej: ~/Downloads)",
+                "dest_dir": "Directorio base destino (ej: ~/ organiza en ~/Documents, ~/Pictures, etc.)",
+                "mode": "by_type (por extensión), by_date (por fecha), smart (inteligente, default)",
+                "dry_run": "Solo simular sin mover (bool, default false)",
+                "recursive": "Buscar en subdirectorios (bool, default false)",
+                "patterns": "Lista de patrones glob (ej: ['*.pdf', '*.jpg'])",
+            },
+        )
+    )
+
+    # 13. Download File (NUEVO)
+    registry.register(
+        ToolSpec(
+            name="download_file",
+            description="Descarga archivos de internet. Se organiza automáticamente por tipo en la carpeta correcta.",
+            fn=download_file.run_download_file,
+            schema={
+                "url": "URL del archivo a descargar (obligatorio)",
+                "filename": "Nombre del archivo (opcional, se detecta auto)",
+                "destination": "Directorio destino (opcional, se organiza auto)",
+                "organize": "Organizar por tipo automáticamente (bool, default true)",
+                "timeout": "Timeout en segundos (default 60)",
+            },
+        )
+    )
+
+    # 14. Search and Download (NUEVO)
+    registry.register(
+        ToolSpec(
+            name="search_and_download",
+            description="Busca un archivo en internet y lo descarga automáticamente. Ej: 'Python tutorial PDF', 'React logo PNG'",
+            fn=download_file.search_and_download,
+            schema={
+                "query": "Búsqueda del archivo (obligatorio)",
+                "file_type": "Tipo de archivo (ej: pdf, png, mp3, etc.)",
+                "organize": "Organizar automáticamente (bool, default true)",
             },
         )
     )

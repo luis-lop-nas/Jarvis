@@ -1,7 +1,10 @@
 """
 tts.py
 
-Text-to-Speech con Piper (voz neural natural).
+Text-to-Speech con múltiples engines:
+- ElevenLabs (voz personalizada de alta calidad)
+- Piper (voz neural local)
+- macOS 'say' (fallback)
 """
 
 from __future__ import annotations
@@ -16,16 +19,26 @@ from typing import Optional
 
 @dataclass
 class TTSConfig:
-    engine: str = "piper"
+    engine: str = "elevenlabs"  # elevenlabs, piper, macos
     voice_model: Optional[str] = None
     voice: Optional[str] = None
     rate: Optional[int] = None
+    # ElevenLabs
+    elevenlabs_api_key: Optional[str] = None
+    elevenlabs_voice_id: Optional[str] = None
+    elevenlabs_model: str = "eleven_multilingual_v2"
 
 
 class TTS:
     def __init__(self, cfg: Optional[TTSConfig] = None):
         self.cfg = cfg or TTSConfig()
-        
+
+        # Auto-configurar según disponibilidad
+        if self.cfg.engine == "elevenlabs":
+            if not self.cfg.elevenlabs_api_key or not self.cfg.elevenlabs_voice_id:
+                print("⚠️ ElevenLabs no configurado. Intentando Piper...")
+                self.cfg.engine = "piper"
+
         if self.cfg.engine == "piper" and not self.cfg.voice_model:
             default_voice = Path("data/voices/es_ES-davefx-medium.onnx")
             if default_voice.exists():
@@ -39,10 +52,50 @@ class TTS:
         if not text:
             return {"command": "", "returncode": 0, "stdout": "", "stderr": ""}
 
-        if self.cfg.engine == "piper" and self.cfg.voice_model:
+        if self.cfg.engine == "elevenlabs":
+            return self._speak_elevenlabs(text)
+        elif self.cfg.engine == "piper" and self.cfg.voice_model:
             return self._speak_piper(text)
         else:
             return self._speak_macos(text)
+
+    def _speak_elevenlabs(self, text: str) -> dict:
+        """Habla usando ElevenLabs TTS."""
+        try:
+            from elevenlabs import VoiceSettings, play
+            from elevenlabs.client import ElevenLabs
+
+            client = ElevenLabs(api_key=self.cfg.elevenlabs_api_key)
+
+            # Generar audio
+            audio = client.generate(
+                text=text,
+                voice=self.cfg.elevenlabs_voice_id,
+                model=self.cfg.elevenlabs_model,
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True
+                )
+            )
+
+            # Reproducir directamente
+            play(audio)
+
+            return {
+                "command": "elevenlabs",
+                "returncode": 0,
+                "stdout": "Audio reproducido con ElevenLabs",
+                "stderr": "",
+            }
+
+        except ImportError:
+            print("⚠️ elevenlabs no instalado. Instala con: pip install elevenlabs")
+            return self._speak_piper(text)
+        except Exception as e:
+            print(f"⚠️ Error ElevenLabs: {e}. Usando fallback...")
+            return self._speak_piper(text)
 
     def _speak_piper(self, text: str) -> dict:
         """Habla usando Piper TTS."""

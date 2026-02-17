@@ -92,9 +92,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             keyword=settings.wake_word,
             sensitivity=0.6,
         )
-        
+
         stt_cfg = STTConfig()
-        tts_cfg = TTSConfig()
+        tts_cfg = TTSConfig(
+            engine=settings.tts_engine,
+            elevenlabs_api_key=settings.elevenlabs_api_key,
+            elevenlabs_voice_id=settings.elevenlabs_voice_id,
+            elevenlabs_model=settings.elevenlabs_model,
+        )
 
         voice_loop = VoiceLoop(
             wake_cfg=wake_cfg,
