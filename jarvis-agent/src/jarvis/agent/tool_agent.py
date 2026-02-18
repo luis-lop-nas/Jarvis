@@ -18,6 +18,7 @@ import requests
 
 from jarvis.agent.prompts import SYSTEM_PROMPT
 from jarvis.agent.runner import AgentConfig, AgentState
+from jarvis.agent.state import truncate_history
 from jarvis.tools.registry import ToolRegistry, build_default_registry
 
 
@@ -31,6 +32,10 @@ class ToolAgentConfig(AgentConfig):
     use_claude: bool = False
     claude_api_key: str = ""
     claude_model: str = "claude-sonnet-4-6"
+    # Gemini
+    use_gemini: bool = False
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
     # Groq (fallback conversación)
     use_groq: bool = False
     groq_api_key: str = ""
@@ -73,6 +78,17 @@ class ToolAgent:
             except ImportError:
                 print("⚠️ 'anthropic' no instalado. pip install anthropic")
 
+        # Inicializar Gemini
+        self.gemini_client = None
+        if self.config.use_gemini and self.config.gemini_api_key:
+            try:
+                from google import genai
+                self.gemini_client = genai.Client(api_key=self.config.gemini_api_key)
+                if not self.claude_client:
+                    print(f"✅ Gemini {self.config.gemini_model} activado")
+            except ImportError:
+                print("⚠️ 'google-genai' no instalado. pip install google-genai")
+
         # Inicializar Groq (fallback o STT)
         self.groq_client = None
         if self.config.use_groq and self.config.groq_api_key:
@@ -83,6 +99,11 @@ class ToolAgent:
                     print("✅ Groq activado como LLM principal")
             except ImportError:
                 print("⚠️ Librería 'groq' no instalada.")
+
+        # Pre-computar schemas de tools (inmutables durante la vida del agente)
+        self._cached_claude_tools = self._tools_for_claude()
+        self._cached_ollama_tools = self._tools_for_ollama()
+        self._cached_gemini_tools = self._tools_for_gemini() if self.gemini_client else []
 
     # ------------------------------------------------------------------
     # Memoria
@@ -202,9 +223,10 @@ class ToolAgent:
     # ------------------------------------------------------------------
 
     def _build_claude_messages(self) -> List[Message]:
-        """Filtra el historial para Claude (solo user/assistant con texto)."""
+        """Filtra el historial para Claude (solo user/assistant con texto, truncado)."""
+        history = truncate_history(self.state.history, max_messages=20)
         messages: List[Message] = []
-        for msg in self.state.history:
+        for msg in history:
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str) and content.strip():
@@ -218,7 +240,7 @@ class ToolAgent:
     def _run_with_claude(self, user_text: str) -> str:
         """Claude como cerebro único: conversación + tools nativo."""
         messages = self._build_claude_messages()
-        tools = self._tools_for_claude()
+        tools = self._cached_claude_tools
 
         for loop_count in range(self.config.max_tool_loops):
             try:
@@ -297,13 +319,136 @@ class ToolAgent:
         return msg
 
     # ------------------------------------------------------------------
+    # Motor Gemini
+    # ------------------------------------------------------------------
+
+    def _tools_for_gemini(self) -> List[Any]:
+        """Schema de tools en formato Gemini."""
+        from google.genai import types
+
+        declarations = []
+        for name, spec in self.registry.list().items():
+            properties: Dict[str, Any] = {}
+            required: List[str] = []
+
+            for field_name, desc in (spec.schema or {}).items():
+                desc_str = str(desc)
+                if "int" in desc_str.lower():
+                    ftype = "INTEGER"
+                elif "bool" in desc_str.lower():
+                    ftype = "BOOLEAN"
+                else:
+                    ftype = "STRING"
+
+                properties[field_name] = types.Schema(
+                    type=ftype,
+                    description=desc_str,
+                )
+                if "obligatorio" in desc_str.lower():
+                    required.append(field_name)
+
+            params = types.Schema(
+                type="OBJECT",
+                properties=properties,
+                required=required if required else [],
+            )
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=spec.name,
+                    description=spec.description,
+                    parameters=params,
+                )
+            )
+
+        return [types.Tool(function_declarations=declarations)] if declarations else []
+
+    def _run_with_gemini(self, user_text: str) -> str:
+        """Gemini como cerebro: conversación + tools nativo."""
+        from google.genai import types
+
+        # Construir historial en formato Gemini (truncado)
+        contents: List[Any] = []
+        for msg in truncate_history(self.state.history, max_messages=20):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user" and isinstance(content, str) and content.strip():
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(content)]))
+            elif role == "assistant" and isinstance(content, str) and content.strip():
+                contents.append(types.Content(role="model", parts=[types.Part.from_text(content)]))
+
+        tools = self._cached_gemini_tools
+
+        for _ in range(self.config.max_tool_loops):
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model=self.config.gemini_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        tools=tools if tools else None,
+                    ),
+                )
+            except Exception as e:
+                err = f"Error Gemini API: {e}"
+                if self.config.debug:
+                    print(f"⚠️ {err}")
+                if self.groq_client:
+                    return self._run_with_groq_simple(user_text)
+                self.state.add_assistant(err)
+                self._save_message("assistant", err)
+                return err
+
+            candidate = response.candidates[0]
+            parts = candidate.content.parts
+
+            # Buscar tool calls
+            tool_calls = [p for p in parts if p.function_call is not None]
+
+            if not tool_calls:
+                # Respuesta final
+                text = "".join(p.text for p in parts if hasattr(p, "text") and p.text).strip()
+                text = text or "No generé respuesta."
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
+
+            # Añadir respuesta del modelo al historial
+            contents.append(types.Content(role="model", parts=parts))
+
+            # Ejecutar tools y devolver resultados
+            result_parts = []
+            for part in tool_calls:
+                fc = part.function_call
+                tool_args = dict(fc.args) if fc.args else {}
+
+                if self.config.debug:
+                    print(f"🔧 Gemini usa: {fc.name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
+
+                tool_out = self.registry.call(fc.name, tool_args)
+                self._save_tool_event(fc.name, tool_args, tool_out)
+
+                result_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name,
+                        response={"result": json.dumps(tool_out, ensure_ascii=False)},
+                    )
+                )
+
+            contents.append(types.Content(role="user", parts=result_parts))
+
+        msg = "Límite de iteraciones de herramientas alcanzado."
+        self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
+        return msg
+
+    # ------------------------------------------------------------------
     # Motor Groq (fallback)
     # ------------------------------------------------------------------
 
     def _run_with_groq_simple(self, user_text: str) -> str:
         """Groq para conversación (fallback de Claude)."""
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in self.state.history:
+        for msg in truncate_history(self.state.history, max_messages=20):
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str):
@@ -354,7 +499,7 @@ class ToolAgent:
                 self._save_message("assistant", err)
                 return err
 
-        tools = self._tools_for_ollama()
+        tools = self._cached_ollama_tools
 
         for _ in range(self.config.max_tool_loops):
             try:
@@ -421,6 +566,10 @@ class ToolAgent:
         if self.claude_client and self.config.use_claude:
             return self._run_with_claude(user_text)
 
+        # Gemini: conversación + tools
+        if self.gemini_client and self.config.use_gemini:
+            return self._run_with_gemini(user_text)
+
         # Groq: solo conversación (sin tools)
         if self.groq_client and self.config.use_groq:
             return self._run_with_groq_simple(user_text)
@@ -440,6 +589,10 @@ def tool_agent_from_settings(
         use_claude=bool(getattr(settings, "use_claude", False)),
         claude_api_key=getattr(settings, "anthropic_api_key", ""),
         claude_model=getattr(settings, "anthropic_model", "claude-sonnet-4-6"),
+        # Gemini
+        use_gemini=bool(getattr(settings, "use_gemini", False)),
+        gemini_api_key=getattr(settings, "gemini_api_key", ""),
+        gemini_model=getattr(settings, "gemini_model", "gemini-2.0-flash"),
         # Groq
         use_groq=bool(getattr(settings, "use_groq", False)),
         groq_api_key=getattr(settings, "groq_api_key", ""),

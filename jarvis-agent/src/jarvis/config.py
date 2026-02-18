@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     anthropic_model: str = Field(default="claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
     use_claude: bool = Field(default=False, alias="USE_CLAUDE")
 
+    # --- Google Gemini ---
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-2.0-flash", alias="GEMINI_MODEL")
+    use_gemini: bool = Field(default=False, alias="USE_GEMINI")
+
     # --- Groq API (STT + fallback LLM) ---
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")

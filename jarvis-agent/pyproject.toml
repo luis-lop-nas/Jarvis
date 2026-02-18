@@ -52,6 +52,9 @@ dependencies = [
   # --- ElevenLabs TTS ---
   "elevenlabs>=1.0.0",           # SDK ElevenLabs para TTS de alta calidad
 
+  # --- Google Gemini ---
+  "google-genai>=1.0.0",         # SDK Gemini 2.0 Flash
+
   # --- Anthropic Claude (cerebro principal) ---
   "anthropic>=0.40.0",           # SDK Claude Sonnet 4.6
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -15,36 +16,39 @@ from typing import Any, Dict, List, Optional
 
 
 class MemoryStore:
-    """Store de memoria persistente."""
-    
+    """Store de memoria persistente con conexión SQLite persistente."""
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+        )
+        self._conn.row_factory = sqlite3.Row
         self._init_db()
-    
+
     def _init_db(self) -> None:
         """Inicializa la base de datos con el schema."""
         schema_path = Path(__file__).parent / "schema.sql"
-        
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock:
             with open(schema_path, 'r') as f:
-                conn.executescript(f.read())
-            conn.commit()
-    
+                self._conn.executescript(f.read())
+            self._conn.commit()
+
     def create_session(self) -> str:
         """Crea una nueva sesión y retorna su ID."""
         session_id = str(uuid.uuid4())
         timestamp = datetime.now().isoformat()
-        
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+        with self._lock:
+            self._conn.execute(
                 "INSERT INTO sessions (id, created_at) VALUES (?, ?)",
                 (session_id, timestamp)
             )
-            conn.commit()
-        
+            self._conn.commit()
         return session_id
-    
+
     def add_message(
         self,
         session_id: str,
@@ -53,17 +57,16 @@ class MemoryStore:
     ) -> None:
         """Añade un mensaje a la sesión."""
         timestamp = datetime.now().isoformat()
-        
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+        with self._lock:
+            self._conn.execute(
                 """
                 INSERT INTO messages (session_id, role, content, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
                 (session_id, role, content, timestamp)
             )
-            conn.commit()
-    
+            self._conn.commit()
+
     def add_tool_event(
         self,
         session_id: str,
@@ -73,11 +76,10 @@ class MemoryStore:
     ) -> None:
         """Registra un evento de uso de herramienta."""
         timestamp = datetime.now().isoformat()
-        
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+        with self._lock:
+            self._conn.execute(
                 """
-                INSERT INTO tool_events 
+                INSERT INTO tool_events
                 (session_id, tool_name, tool_args, tool_result, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
@@ -89,13 +91,12 @@ class MemoryStore:
                     timestamp
                 )
             )
-            conn.commit()
-    
+            self._conn.commit()
+
     def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Obtiene todos los mensajes de una sesión."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
+        with self._lock:
+            cursor = self._conn.execute(
                 """
                 SELECT role, content, created_at
                 FROM messages
@@ -105,12 +106,11 @@ class MemoryStore:
                 (session_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def get_recent_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Obtiene las sesiones más recientes."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
+        with self._lock:
+            cursor = self._conn.execute(
                 """
                 SELECT s.id, s.created_at, COUNT(m.id) as message_count
                 FROM sessions s
@@ -122,12 +122,11 @@ class MemoryStore:
                 (limit,)
             )
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def search_messages(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Busca mensajes que contengan el query."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
+        with self._lock:
+            cursor = self._conn.execute(
                 """
                 SELECT m.session_id, m.role, m.content, m.created_at
                 FROM messages m
@@ -138,3 +137,8 @@ class MemoryStore:
                 (f"%{query}%", limit)
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def close(self) -> None:
+        """Cierra la conexión a la base de datos."""
+        with self._lock:
+            self._conn.close()
