@@ -13,7 +13,7 @@ from jarvis.config import load_settings
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="jarvis", description="Jarvis Agent (CLI + Voice + Web)")
+    p = argparse.ArgumentParser(prog="jarvis", description="Jarvis Agent (CLI + Voice + Web + Desktop)")
     p.add_argument(
         "--voice",
         action="store_true",
@@ -23,6 +23,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--web",
         action="store_true",
         help="Activa servidor web (interface gráfica).",
+    )
+    p.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Activa modo escritorio: overlay visual + voz + LLM (macOS).",
     )
     p.add_argument(
         "--port",
@@ -51,6 +56,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.debug:
         settings.debug = True  # type: ignore[attr-defined]
+
+    # Modo DESKTOP (macOS overlay + voz + LLM)
+    if args.desktop:
+        _run_desktop(settings, paths)
+        return 0
 
     # Modo WEB
     if args.web:
@@ -127,6 +137,59 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_cli(settings=settings, paths=paths)
 
     return 0
+
+
+def _run_desktop(settings, paths) -> None:
+    """Arranca Jarvis en modo escritorio: overlay NSWindow + daemon voz/LLM."""
+    import signal
+    import AppKit
+
+    from jarvis.overlay.window    import JarvisWindow
+    from jarvis.overlay.view      import JarvisView
+    from jarvis.overlay.bridge    import OverlayBridge
+    from jarvis.overlay.particles import ParticleSystem
+    from jarvis.overlay.daemon    import JarvisDaemon
+    from jarvis.overlay.menubar   import MenuBar
+
+    signal.signal(
+        signal.SIGINT,
+        lambda *_: AppKit.NSApplication.sharedApplication().terminate_(None),
+    )
+
+    app = AppKit.NSApplication.sharedApplication()
+    # Sin icono en el Dock — Jarvis vive en la barra de menú
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+    screen = AppKit.NSScreen.mainScreen()
+    frame  = screen.frame()
+    sw, sh = frame.size.width, frame.size.height
+
+    # ── Overlay visual ───────────────────────────────────────────────────────
+    view      = JarvisView.alloc().initWithFrame_(frame)
+    _window   = JarvisWindow(view)          # retener referencia
+
+    particles = ParticleSystem(view)
+    view.attach_particles(particles)
+
+    bridge = OverlayBridge()
+    bridge.attach(view, particles)
+
+    # ── Daemon (voz + LLM + tools) ───────────────────────────────────────────
+    daemon = JarvisDaemon(bridge, sw, sh, settings, paths)
+    daemon.start()
+
+    # ── Barra de menú ────────────────────────────────────────────────────────
+    _menubar = MenuBar(daemon)              # retener referencia
+
+    print("\n🔵 Jarvis Desktop activo.")
+    print(f"   Pantalla: {int(sw)}×{int(sh)}")
+    print("   Di «Hey Jarvis» o pulsa Ctrl+Space para hablar.")
+    print("   Icono ◉ J en la barra de menú para controlar.\n")
+
+    # NSApplication runloop — bloquea hasta Cmd+Q / Salir
+    app.run()
+
+    daemon.stop()
 
 
 if __name__ == "__main__":

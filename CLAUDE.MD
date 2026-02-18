@@ -2,99 +2,113 @@
 
 ## 📋 Descripción del Proyecto
 
-JARVIS (Just A Rather Very Intelligent System) es un asistente de IA avanzado con interfaz web interactiva, capacidades de voz, visión por computadora y gestión de conocimiento mediante RAG.
+JARVIS (Just A Rather Very Intelligent System) es un asistente de IA con overlay visual nativo en macOS, voz, visión y gestión de conocimiento mediante RAG. Corre en segundo plano sin Dock ni ventana visible.
 
 ## 🏗️ Arquitectura del Sistema
 
+### Modos de uso
+
+| Modo | Comando | Descripción |
+|------|---------|-------------|
+| **Desktop** *(principal)* | `python -m jarvis --desktop` | Overlay nativo macOS, voz + hotkey, sin Dock |
+| **Web** | `python -m jarvis --web` | FastAPI + WebSocket, interfaz en navegador |
+| **CLI** | `python -m jarvis` | Terminal interactivo con Rich |
+| **Voz** | `python -m jarvis --voice` | Solo voz + wake word, sin overlay |
+
 ### Componentes Principales
 
-1. **Frontend Web (Interfaz Visual)**
-   - Nube de puntos 3D interactiva (1200 partículas esféricas + 200 flotantes)
-   - Animaciones suaves con física de partículas
-   - Barra de búsqueda dinámica
-   - Chat en tiempo real via WebSocket
+1. **Overlay Desktop (PyObjC — modo principal)**
+   - Orb animado flotante sobre todas las apps (NSWindow click-through)
+   - Estados: `idle` (azul) · `listening` (verde) · `thinking` (naranja + órbitas) · `acting` (azul eléctrico)
+   - Partículas bezier animadas (`fly_to`) antes de ejecutar tools visuales
+   - Drag del orb con el ratón a cualquier posición
+   - Popup de texto con `Ctrl+Space` (alternativa a voz)
+   - Icono `◉ J` en la barra de menú con toggle Silenciar y Autostart
 
 2. **Backend (Python)**
-   - FastAPI para servidor web
-   - WebSocket para comunicación en tiempo real
+   - FastAPI para servidor web (modo `--web`)
    - Motor LLM con prioridad: Claude → Gemini → Groq → Ollama
    - Sistema RAG con ChromaDB
    - Memoria persistente en SQLite
 
 3. **Capacidades de IA**
    - **Claude (Anthropic)**: Motor principal con tool use nativo
-   - **Gemini (Google)**: Alternativa cloud con tool use nativo (no disponible en EU free tier)
-   - **Groq API**: `llama-3.3-70b-versatile` — motor activo actualmente (gratis, 14.400 req/día)
-   - **Ollama**: Fallback local (`llama3.2:3b` instalado)
-   - **Voice**: STT (Groq Whisper) y TTS (ElevenLabs / macOS)
-   - **Vision**: Análisis de pantalla con Quartz + APIs de accesibilidad
+   - **Gemini (Google)**: Alternativa cloud con tool use nativo
+   - **Groq API**: `llama-3.3-70b-versatile` — motor activo (gratis, 14.400 req/día)
+   - **Ollama**: Fallback local (`llama3.2:3b`)
+   - **Voice**: STT (Groq Whisper + VAD por energía) · TTS (ElevenLabs / Piper / macOS say)
+   - **Vision**: Análisis de pantalla con Quartz + APIs de Accesibilidad
 
 ## 📁 Estructura del Proyecto
 
 ```
 jarvis-agent/
 ├── .env                     # Variables de entorno (API keys)
-├── .env.example             # Plantilla de .env
-├── pyproject.toml           # Dependencias y configuración del paquete
-├── README.md
+├── .env.example
+├── pyproject.toml
 ├── data/                    # Datos en tiempo de ejecución (NO en git)
-│   ├── jarvis.db            # SQLite — memoria persistente de sesiones
+│   ├── jarvis.db            # SQLite — memoria persistente
 │   ├── knowledge/           # ChromaDB vector database
-│   ├── knowledge_seed/      # Documentos iniciales para la KB
-│   ├── logs/                # Logs de sesiones CLI
-│   ├── voices/              # Modelos TTS locales (Piper)
-│   └── workspace/           # Workspace del agente para archivos temporales
-├── sandbox/
-│   └── docker/              # Dockerfiles para sandbox de ejecución de código
-│       ├── Dockerfile.python
-│       └── Dockerfile.node
-├── scripts/                 # Scripts de utilidad
-│   ├── init_knowledge.py    # Inicializa la base de conocimiento
-│   └── generate_knowledge_base.py
-├── tests/                   # Tests (vacío, listo para crecer)
+│   ├── logs/
+│   └── workspace/           # Archivos temporales del agente
+├── tests/
+│   ├── test_overlay.py      # Test visual del orb (sin daemon)
+│   └── test_overlay_daemon.py  # Test completo overlay + daemon
 └── src/
     └── jarvis/
-        ├── __init__.py
         ├── config.py            # Settings centralizados (pydantic-settings)
-        ├── main.py              # Entry point: --web / --voice / CLI
+        ├── main.py              # Entry point: --desktop / --web / --voice / CLI
+        ├── autostart.py         # LaunchAgent macOS (install/uninstall)
         ├── agent/
         │   ├── runner.py        # AgentConfig (base dataclass)
-        │   ├── state.py         # AgentState + truncate_history + helpers
+        │   ├── state.py         # AgentState + truncate_history
         │   ├── tool_agent.py    # Motor principal: Claude/Gemini/Groq/Ollama
-        │   └── prompts.py       # SYSTEM_PROMPT de JARVIS
+        │   └── prompts.py       # SYSTEM_PROMPT
         ├── knowledge/
         │   └── knowledge_base.py  # RAG con ChromaDB + sentence-transformers
         ├── memory/
-        │   ├── schema.sql       # Schema SQLite (sessions, messages, tool_events)
-        │   └── store.py         # MemoryStore — conexión persistente, thread-safe
+        │   ├── schema.sql
+        │   └── store.py         # MemoryStore — SQLite thread-safe
+        ├── overlay/             # ── Overlay Desktop (PyObjC) ──
+        │   ├── window.py        # NSWindow transparente, float sobre todo
+        │   ├── view.py          # JarvisView: orb + órbitas + drag
+        │   ├── particles.py     # ParticleSystem: fly_to bezier
+        │   ├── bridge.py        # IPC thread-safe daemon ↔ overlay
+        │   ├── dock.py          # Posición exacta de iconos del Dock (AX API)
+        │   ├── daemon.py        # Voz/texto + LLM + tools + hooks visuales
+        │   ├── menubar.py       # Icono ◉ J en barra de menú
+        │   └── text_input.py    # Popup texto (hotkey Ctrl+Space)
         ├── tools/
-        │   ├── registry.py      # ToolRegistry + build_default_registry()
-        │   ├── shell.py         # Ejecutar comandos shell
-        │   ├── filesystem.py    # Operaciones de archivos
-        │   ├── open_app.py      # Abrir apps/URLs en macOS
-        │   ├── run_code.py      # Ejecutar Python/Node en Docker sandbox
-        │   ├── web_search.py    # Búsqueda web (DuckDuckGo)
-        │   ├── spotify.py       # Control de Spotify
-        │   ├── calendar.py      # Consultar/crear eventos
-        │   ├── email.py         # Enviar emails via Mail.app
-        │   ├── vision.py        # Análisis de pantalla
-        │   ├── code_assistant.py # Generar código + abrir en VS Code
-        │   ├── knowledge.py     # Wrapper tool para knowledge_base
-        │   ├── organize_files.py # Organizar archivos automáticamente
-        │   └── download_file.py  # Descargar archivos de internet
+        │   ├── registry.py      # ToolRegistry + VisualRegistry (fly_to hooks)
+        │   ├── shell.py
+        │   ├── filesystem.py
+        │   ├── open_app.py
+        │   ├── run_code.py
+        │   ├── web_search.py
+        │   ├── spotify.py
+        │   ├── calendar.py
+        │   ├── email.py
+        │   ├── vision.py
+        │   ├── code_assistant.py
+        │   ├── knowledge.py
+        │   ├── organize_files.py
+        │   ├── download_file.py
+        │   ├── system_info.py
+        │   ├── datetime_tool.py
+        │   └── weather.py
         ├── ui/
-        │   └── cli.py           # CLI interactivo con Rich
+        │   └── cli.py
         ├── vision/
-        │   ├── screenshot.py    # Captura de pantalla (Quartz)
-        │   ├── vision_analyzer.py # Análisis con LLM
-        │   └── accessibility.py # Contexto de app activa (macOS)
+        │   ├── screenshot.py
+        │   ├── vision_analyzer.py
+        │   └── accessibility.py
         ├── voice/
-        │   ├── stt.py           # Speech-to-Text (Groq Whisper / local)
-        │   ├── tts.py           # Text-to-Speech (ElevenLabs / Piper / macOS)
-        │   ├── wake_word.py     # Detección wake word (OpenWakeWord / Porcupine)
-        │   └── voice_loop.py    # Loop principal de voz
+        │   ├── stt.py           # STT (Groq Whisper / local Whisper)
+        │   ├── tts.py           # TTS (ElevenLabs / Piper / macOS say)
+        │   ├── wake_word.py     # OpenWakeWord / Porcupine
+        │   └── voice_loop.py    # Loop principal de voz (modo --voice)
         └── web/
-            ├── server.py        # FastAPI server
+            ├── server.py        # FastAPI server (lifespan pattern)
             └── static/
                 ├── index.html
                 ├── style.css
@@ -109,7 +123,7 @@ USE_CLAUDE=false
 ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=claude-sonnet-4-6
 
-USE_GEMINI=false                    # No disponible en EU (free tier = 0)
+USE_GEMINI=false
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.0-flash
 
@@ -129,77 +143,90 @@ WAKE_WORD_ENGINE=openwakeword
 WAKE_WORD=jarvis
 ```
 
-## 🚀 Arrancar el Servidor
+## 🚀 Arrancar Jarvis
 
 ```bash
 cd /Users/luichi/Documents/Jarvis/jarvis-agent
 source .venv/bin/activate
+
+# Modo Desktop (recomendado)
+PYTHONPATH=src python -m jarvis --desktop
+
+# Modo Web
 PYTHONPATH=src uvicorn jarvis.web.server:app --host 0.0.0.0 --port 8000
+# Abrir: http://localhost:8000
 ```
 
-Abrir: `http://localhost:8000`
+## 🖥️ Overlay Desktop — Arquitectura
 
-El servidor inicializa agente + STT + TTS en el evento `startup` de FastAPI (no en el primer mensaje).
+### Hilo principal (NSApplication)
+`window.py` → `view.py` → `particles.py`
 
-## 🖥️ Modos de Uso
+El NSApplication corre en el hilo principal. El orb se dibuja a 30fps con NSTimer. Las partículas se actualizan en el mismo timer.
 
-```bash
-# Web (recomendado)
-python -m jarvis --web --port 8000
+### Hilo secundario (daemon)
+`daemon.py` → `bridge.py` → hilo principal
 
-# CLI interactivo
-python -m jarvis
+El daemon corre en background. Se comunica con el overlay vía `OverlayBridge` (cola thread-safe bombeada por NSTimer cada 50ms).
 
-# Voz con wake word
-python -m jarvis --voice
+### Ciclo de interacción
+
+```
+Wake word ("Hey Jarvis")   →  orb verde    → graba con VAD
+   o Ctrl+Space            →  orb verde    → popup de texto
+
+Transcripción / texto      →  orb naranja  → LLM procesa
+                                              (órbitas girando)
+
+Tool visual (open_app...)  →  orb azul     → 30 partículas
+                                              vuelan al Dock
+                                              → se ejecuta la tool
+
+TTS respuesta              →  orb azul     → Jarvis habla
+Fin                        →  orb azul     → idle
 ```
 
-## 🔌 WebSocket API
+### Clases clave del overlay
 
-**Cliente → Servidor:**
-```json
-{ "message": "texto del usuario" }
-```
+| Clase | Archivo | Responsabilidad |
+|-------|---------|-----------------|
+| `JarvisWindow` | `window.py` | NSWindow transparente, nivel 1000, todos los Spaces |
+| `JarvisView` | `view.py` | Dibuja orb + halos + órbitas; gestiona drag |
+| `ParticleSystem` | `particles.py` | Vuelos de partículas bezier (`fly_to`) |
+| `OverlayBridge` | `bridge.py` | Cola IPC + `run_on_main_thread()` |
+| `VisualRegistry` | `daemon.py` | ToolRegistry que intercepta tools para lanzar `fly_to` |
+| `JarvisDaemon` | `daemon.py` | Wake word / hotkey / VAD / STT / LLM / TTS |
+| `MenuBar` | `menubar.py` | Icono ◉ J, toggle Silenciar, toggle Autostart |
+| `TextInputPopup` | `text_input.py` | Popup texto para hotkey Ctrl+Space |
 
-**Servidor → Cliente:**
-```json
-{ "type": "user_message" | "assistant_message" | "error", "content": "..." }
-```
+### Estados del orb
 
-**Endpoints REST:**
-- `GET /` — Interfaz web
-- `GET /health` — Health check
-- `POST /transcribe` — Transcribir audio (multipart/form-data)
-- `POST /speak` — TTS: `{ "text": "..." }`
+| Estado | Color | Animación |
+|--------|-------|-----------|
+| `idle` | Azul `(0, 0.71, 1)` | Pulso suave |
+| `listening` | Verde `(0, 0.95, 0.5)` | Pulso rápido + anillo |
+| `thinking` | Naranja `(1, 0.6, 0)` | Anillo + 2 órbitas contra-rotantes |
+| `acting` | Azul brillante `(0, 0.85, 1)` | Órbitas + partículas fly_to |
 
-## 🧠 Motor de Agente (tool_agent.py)
+### Detección de posición del Dock (`dock.py`)
 
-**Prioridad de motores:** Claude → Gemini → Groq → Ollama
+Usa la API de Accesibilidad de macOS (`ApplicationServices.AXUIElementCreateApplication`) para encontrar la posición exacta de cada icono en el Dock. Las partículas vuelan al píxel exacto del icono antes de abrir la app.
 
-Cada motor tiene su propio método `_run_with_*`. Los schemas de herramientas se precalculan en `__init__` y se cachean (`_cached_claude_tools`, `_cached_groq_tools`, etc.).
+Requiere permiso en: **Ajustes → Privacidad y Seguridad → Accesibilidad → Terminal ✓**
 
-El historial se trunca a los últimos **20 mensajes** en cada llamada (`truncate_history` de `state.py`).
+### Autostart (`autostart.py`)
 
-## 🧱 Módulos Clave
+Instala un LaunchAgent en `~/Library/LaunchAgents/com.jarvis.desktop.plist`. Activable desde el menú `◉ J → Arrancar al inicio`.
 
-### `agent/state.py`
-- `AgentState` — historial en memoria (memoria corta de la sesión)
-- `truncate_history(history, max_messages=20)` — evita que el contexto crezca sin límite
-- `count_tokens_estimate(messages)` — estimación rápida de tokens
+## 🧠 Motor de Agente
 
-### `agent/runner.py`
-- `AgentConfig` — dataclass base con `debug: bool`
+**Prioridad:** Claude → Gemini → Groq → Ollama
 
-### `memory/store.py`
-- `MemoryStore` — conexión SQLite persistente con `threading.Lock`
-- Tablas: `sessions`, `messages`, `tool_events`
-- WAL mode habilitado para concurrencia
+- Schemas de tools cacheados en `__init__` (`_cached_claude_tools`, etc.)
+- Historial truncado a 20 mensajes (`truncate_history`)
+- En modo desktop, `VisualRegistry` intercepta `open_app`, `shell`, `code_assistant`, `organize_files` para lanzar `fly_to` antes de ejecutar
 
-### `tools/registry.py`
-- `ToolRegistry` — registro central de herramientas
-- `build_default_registry()` — construye el registro con las 14 tools disponibles
-
-## 🛠️ Herramientas Disponibles (14)
+## 🛠️ Herramientas Disponibles (17)
 
 | Tool | Descripción |
 |------|-------------|
@@ -217,68 +244,57 @@ El historial se trunca a los últimos **20 mensajes** en cada llamada (`truncate
 | `organize_files` | Organizar archivos por tipo/fecha |
 | `download_file` | Descargar archivos de internet |
 | `search_and_download` | Buscar y descargar automáticamente |
+| `system_info` | CPU, RAM, disco, batería, red, procesos |
+| `datetime` | Fecha y hora actual con zona horaria |
+| `weather` | Clima de cualquier ciudad (sin API key) |
 
-## 🎨 Sistema Visual (Frontend)
+## 🔌 WebSocket API (modo --web)
 
-**Nube de Puntos 3D:**
-- 1200 partículas en distribución de Fibonacci (esfera)
-- 200 partículas flotantes ambientales
-- Física individual por partícula (rotación, velocidad, comportamiento)
-- 40% de partículas reaccionan al ratón (optimización)
+**Cliente → Servidor:** `{ "message": "texto" }`
 
-**Estados:**
-1. `idle` — Esfera al 80%, centro de pantalla, movimiento casi imperceptible
-2. `compact` — Al hacer click, compacta al 100% (~2s)
-3. `active` — Al escribir, se mueve arriba-izquierda y vibra orgánicamente
+**Servidor → Cliente:** `{ "type": "user_message"|"assistant_message"|"error", "content": "..." }`
 
-**Paleta de colores:**
-| Elemento | Color |
-|----------|-------|
-| Azul eléctrico | `#00B4FF` / `RGB(0, 180, 255)` |
-| Azul brillante | `#64DCFF` / `RGB(100, 220, 255)` |
-| Núcleo | `#FFFFFF` |
-| Fondo | `#000000` |
+**Endpoints REST:**
+- `GET /` — Interfaz web
+- `GET /health` — Health check
+- `POST /transcribe` — STT multipart/form-data
+- `POST /speak` — TTS: `{ "text": "..." }`
 
-## ⚡ Optimizaciones Backend Aplicadas
+## ⚡ Detalles de Implementación
 
-- **Startup FastAPI**: agente + STT + TTS se inicializan al arrancar el servidor, no en el primer mensaje
-- **`load_settings()` único**: una sola lectura del `.env` al inicio
-- **ffmpeg async**: conversión de audio en `asyncio.to_thread` (no bloquea el event loop)
-- **Schemas cacheados**: `_cached_claude_tools`, `_cached_gemini_tools`, `_cached_ollama_tools` precalculados en `__init__`
-- **Historial truncado**: máximo 20 mensajes enviados al LLM (evita latencia en sesiones largas)
-- **SQLite persistente**: una sola conexión con `threading.Lock` en lugar de abrir/cerrar por operación
+- **FastAPI lifespan**: usa `@asynccontextmanager` (no el deprecated `@on_event`)
+- **VAD**: grabación por energía RMS, para al detectar ~0.9s de silencio (threshold 300, int16)
+- **Coordenadas macOS**: (0,0) = esquina inferior-izquierda; AX API usa top-left → conversión en `dock.py`
+- **Thread model**: NSApplication en hilo principal; daemon en thread secundario; bridge sincroniza con NSTimer cada 50ms
+- **PyObjC**: usar `objc.super(Cls, self).method_()` en subclases ObjC (no `super()`)
+- **AXValueGetValue**: devuelve `(bool, CGPoint/CGSize)` — completamente bridgeado en pyobjc-framework-ApplicationServices
 
 ## 🐛 Debugging
 
 ```bash
-# Ver logs del servidor en consola (uvicorn)
+# Modo desktop con logs
+PYTHONPATH=src python -m jarvis --desktop
+
+# Solo overlay visual (sin daemon)
+PYTHONPATH=src python tests/test_overlay.py
+
+# Overlay + daemon completo
+PYTHONPATH=src python tests/test_overlay_daemon.py
+
+# Web con debug
 PYTHONPATH=src uvicorn jarvis.web.server:app --log-level debug
 
-# Logs de sesiones CLI
-ls data/logs/
-
-# Health check
-curl http://localhost:8000/health
-
-# Test WebSocket rápido
+# Test posición Dock
 python -c "
-import asyncio, websockets, json
-async def t():
-    async with websockets.connect('ws://localhost:8000/ws') as ws:
-        await ws.send(json.dumps({'message': 'hola'}))
-        print(await ws.recv())
-asyncio.run(t())
+import sys; sys.path.insert(0, 'src')
+from jarvis.overlay.dock import get_dock_icon_position
+print(get_dock_icon_position('Finder', 1440.0))
 "
+
+# Logs de autostart
+tail -f /tmp/jarvis.log
+tail -f /tmp/jarvis.err
 ```
-
-## 🔮 Próximas Mejoras
-
-- [ ] Reconocimiento de voz en web (MediaRecorder → /transcribe)
-- [ ] Streaming de respuestas (SSE o WS chunked)
-- [ ] Tests unitarios en `tests/`
-- [ ] Historial de conversaciones visible en UI
-- [ ] Mobile responsive
-- [ ] Exportar conversaciones
 
 ## 👤 Autor
 
@@ -287,4 +303,4 @@ asyncio.run(t())
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 1.1.0
+**Versión**: 2.0.0
