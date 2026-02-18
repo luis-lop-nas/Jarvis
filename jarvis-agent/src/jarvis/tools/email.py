@@ -10,28 +10,24 @@ import subprocess
 from typing import Any, Dict
 
 
-def send_email(
-    to: str = "",
-    subject: str = "",
-    body: str = "",
-    action: str = "send"
-) -> Dict[str, Any]:
+def send_email(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Envía emails usando Mail.app de macOS.
-    
+
     Args:
-        to: Destinatario (email)
-        subject: Asunto del email
-        body: Cuerpo del mensaje
-        action: "send" para enviar, "draft" para crear borrador
-    
+        args: dict con claves:
+            - "to": destinatario (email, obligatorio)
+            - "subject": asunto (obligatorio)
+            - "body": cuerpo del mensaje
+            - "action": "send" o "draft" (default "send")
+
     Returns:
         Dict con ok, result o error
     """
-    to = (to or "").strip()
-    subject = (subject or "").strip()
-    body = (body or "").strip()
-    action = (action or "send").lower().strip()
+    to = str(args.get("to", "")).strip()
+    subject = str(args.get("subject", "")).strip()
+    body = str(args.get("body", "")).strip()
+    action = str(args.get("action", "send")).lower().strip()
     
     if not to:
         return {

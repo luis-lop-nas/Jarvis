@@ -88,12 +88,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         agent = tool_agent_from_settings(settings, memory_store=memory_store)
 
         wake_cfg = WakeWordConfig(
+            engine=settings.wake_word_engine,
+            oww_model=settings.wake_word_model,
+            sensitivity=settings.wake_word_sensitivity,
             access_key=settings.porcupine_access_key,
             keyword=settings.wake_word,
-            sensitivity=0.6,
         )
 
-        stt_cfg = STTConfig()
+        stt_cfg = STTConfig(
+            engine=settings.stt_engine,
+            groq_api_key=settings.groq_api_key,
+            groq_model=settings.stt_groq_model,
+            whisper_model=settings.stt_whisper_model,
+        )
         tts_cfg = TTSConfig(
             engine=settings.tts_engine,
             elevenlabs_api_key=settings.elevenlabs_api_key,

@@ -31,9 +31,10 @@ dependencies = [
   "sounddevice>=0.4.7",          # Micrófono cross-platform (Mac va muy bien)
   "numpy>=1.26.4",               # Necesario para audio buffers y utilidades
 
-  # --- Wake word "Hey Jarvis" (Porcupine) ---
-  # Porcupine funciona muy bien para activación por palabra clave.
-  # pvrecorder es el capturador de mic recomendado para Porcupine.
+  # --- Wake word ---
+  # OpenWakeWord: open source, sin API key, modelos preentrenados (hey_jarvis, etc.)
+  "openwakeword>=0.6.0",
+  # Porcupine (opcional, solo si prefieres el motor de Picovoice)
   "pvporcupine>=3.0.4",
   "pvrecorder>=1.2.2",
 
@@ -50,6 +51,17 @@ dependencies = [
 
   # --- ElevenLabs TTS ---
   "elevenlabs>=1.0.0",           # SDK ElevenLabs para TTS de alta calidad
+
+  # --- Anthropic Claude (cerebro principal) ---
+  "anthropic>=0.40.0",           # SDK Claude Sonnet 4.6
+
+  # --- Voice: VAD (Silero) ---
+  "torch>=2.0.0",                # PyTorch para Silero VAD (detección de voz)
+
+  # --- Vision (macOS) ---
+  "Pillow>=10.0.0",              # Procesamiento de imágenes (capturas de pantalla)
+  "pyobjc-framework-Quartz>=10.0",  # Quartz para capturas de pantalla en macOS
+  "pyobjc-framework-Cocoa>=10.0",   # AppKit para contexto de aplicaciones macOS
 ]
 
 [project.optional-dependencies]

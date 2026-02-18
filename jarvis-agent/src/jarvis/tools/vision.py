@@ -20,28 +20,22 @@ from jarvis.vision.vision_analyzer import (
 )
 
 
-def vision_command(
-    action: str = "describe",
-    question: str = "",
-    capture_mode: str = "full"
-) -> Dict[str, Any]:
+def vision_command(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ejecuta comandos de visión.
-    
+
     Args:
-        action: Acción a realizar
-            - "describe" - Describe qué hay en pantalla
-            - "answer" - Responde pregunta sobre pantalla (requiere question)
-            - "read" - Lee todo el texto en pantalla (OCR)
-            - "context" - Solo obtiene contexto (app activa, URL, etc.)
-        question: Pregunta sobre la pantalla (para action="answer")
-        capture_mode: "full" (pantalla completa) o "window" (ventana activa)
-    
+        args: dict con claves:
+            - "action": "describe", "answer", "read", "context"
+            - "question": pregunta sobre la pantalla (para action="answer")
+            - "capture_mode": "full" o "window" (default "full")
+
     Returns:
         Dict con ok, result o error
     """
-    action = (action or "describe").lower().strip()
-    capture_mode = (capture_mode or "full").lower().strip()
+    action = str(args.get("action", "describe")).lower().strip()
+    question = str(args.get("question", ""))
+    capture_mode = str(args.get("capture_mode", "full")).lower().strip()
     
     # Obtener API key de Groq
     api_key = os.getenv("GROQ_API_KEY", "")

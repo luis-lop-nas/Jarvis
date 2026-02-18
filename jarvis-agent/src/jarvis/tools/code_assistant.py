@@ -13,33 +13,26 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-def code_assistant(
-    task: str = "",
-    language: str = "python",
-    file_path: str = "",
-    open_vscode: bool = True,
-    workspace: str = "data/workspace"
-) -> Dict[str, Any]:
+def code_assistant(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Genera código según la tarea especificada.
-    
+
     Args:
-        task: Descripción de lo que debe programar (obligatorio)
-            Ejemplos:
-            - "Crea una API REST con FastAPI para gestionar usuarios"
-            - "Programa un web scraper que extraiga noticias de ElPais"
-            - "Haz un script que analice archivos CSV y genere gráficos"
-        language: Lenguaje de programación (python, javascript, typescript, etc.)
-        file_path: Ruta del archivo a crear/editar (relativa a workspace)
-            Si no se especifica, se genera automáticamente según la tarea
-        open_vscode: Si debe abrir VS Code automáticamente (default True)
-        workspace: Directorio de trabajo
-    
+        args: dict con claves:
+            - "task": descripción de lo que debe programar (obligatorio)
+            - "language": lenguaje de programación (default "python")
+            - "file_path": ruta del archivo a crear (opcional)
+            - "open_vscode": abrir en VS Code (bool, default True)
+            - "workspace": directorio de trabajo (default "data/workspace")
+
     Returns:
         Dict con ok, result, file_path, code
     """
-    task = (task or "").strip()
-    language = (language or "python").lower().strip()
+    task = str(args.get("task", "")).strip()
+    language = str(args.get("language", "python")).lower().strip()
+    file_path = str(args.get("file_path", ""))
+    open_vscode = bool(args.get("open_vscode", True))
+    workspace = str(args.get("workspace", "data/workspace"))
     
     if not task:
         return {

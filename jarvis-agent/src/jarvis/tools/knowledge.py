@@ -24,43 +24,34 @@ def get_knowledge_base() -> KnowledgeBase:
     return _kb
 
 
-def knowledge_tool(
-    action: str = "search",
-    query: str = "",
-    content: str = "",
-    title: str = "",
-    language: str = "python",
-    category: str = "general",
-    tags: str = "",
-    doc_id: str = "",
-    n_results: int = 3
-) -> Dict[str, Any]:
+def knowledge_tool(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Gestiona la base de conocimiento de Jarvis.
-    
+
     Args:
-        action: Acción a realizar
-            - "search" - Buscar información (requiere query)
-            - "add" - Añadir documento (requiere content)
-            - "add_code" - Añadir código (requiere content, language, title)
-            - "add_tutorial" - Añadir tutorial (requiere title, content, category)
-            - "list" - Listar todos los documentos
-            - "delete" - Eliminar documento (requiere doc_id)
-            - "stats" - Ver estadísticas
-        
-        query: Consulta de búsqueda (para action="search")
-        content: Contenido a guardar (para add/add_code/add_tutorial)
-        title: Título o descripción (para add_code/add_tutorial)
-        language: Lenguaje de programación (para add_code)
-        category: Categoría (para add_tutorial)
-        tags: Tags separados por comas (para add_code)
-        doc_id: ID del documento (para delete)
-        n_results: Número de resultados (para search, default 3)
-    
+        args: dict con claves:
+            - "action": "search", "add", "add_code", "add_tutorial", "list", "delete", "stats"
+            - "query": consulta de búsqueda (para search)
+            - "content": contenido a guardar
+            - "title": título o descripción
+            - "language": lenguaje de programación (default "python")
+            - "category": categoría (default "general")
+            - "tags": tags separados por comas
+            - "doc_id": ID del documento (para delete)
+            - "n_results": número de resultados (default 3)
+
     Returns:
         Dict con ok, result o error
     """
-    action = (action or "search").lower().strip()
+    action = str(args.get("action", "search")).lower().strip()
+    query = str(args.get("query", ""))
+    content = str(args.get("content", ""))
+    title = str(args.get("title", ""))
+    language = str(args.get("language", "python"))
+    category = str(args.get("category", "general"))
+    tags = str(args.get("tags", ""))
+    doc_id = str(args.get("doc_id", ""))
+    n_results = int(args.get("n_results", 3))
     
     try:
         kb = get_knowledge_base()

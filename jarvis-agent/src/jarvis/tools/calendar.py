@@ -11,23 +11,20 @@ from datetime import datetime, timedelta
 from typing import Any, Dict
 
 
-def calendar_query(action: str = "today", query: str = "") -> Dict[str, Any]:
+def calendar_query(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Consulta eventos del calendario de macOS.
-    
+
     Args:
-        action: Tipo de consulta
-            - "today" - Eventos de hoy
-            - "tomorrow" - Eventos de mañana
-            - "week" - Eventos de esta semana
-            - "search" - Buscar eventos (requiere query)
-            - "create" - Crear recordatorio (requiere query)
-        query: Texto para búsqueda o título del recordatorio
-    
+        args: dict con claves:
+            - "action": "today", "tomorrow", "week", "create"
+            - "query": texto para búsqueda o título del recordatorio
+
     Returns:
         Dict con ok, result o error
     """
-    action = (action or "today").lower().strip()
+    action = str(args.get("action", "today")).lower().strip()
+    query = str(args.get("query", ""))
     
     try:
         if action == "today":

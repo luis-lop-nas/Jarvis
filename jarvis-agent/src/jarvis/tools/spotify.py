@@ -10,21 +10,21 @@ import subprocess
 from typing import Any, Dict
 
 
-def spotify_control(action: str = "status") -> Dict[str, Any]:
+def spotify_control(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Controla Spotify en macOS.
-    
+
     Args:
-        action: Acción a realizar
+        args: dict con clave "action":
             - "play" / "pause" / "playpause"
             - "next" / "previous"
             - "status" (devuelve qué está sonando)
             - "volume_up" / "volume_down"
-    
+
     Returns:
         Dict con ok, result o error
     """
-    action = (action or "status").lower().strip()
+    action = str(args.get("action", "status")).lower().strip()
     
     try:
         if action == "status":

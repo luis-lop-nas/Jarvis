@@ -78,4 +78,4 @@ def run_web_search(args: Dict[str, Any]) -> Dict[str, Any]:
         if len(results) >= limit:
             break
 
-    return {"query": query, "results": results, "fetched_from": str(r.url)}
+    return {"ok": True, "query": query, "results": results, "fetched_from": str(r.url)}

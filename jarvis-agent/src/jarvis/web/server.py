@@ -53,7 +53,13 @@ def get_stt():
     global _stt
 
     if _stt is None:
-        _stt = STT(STTConfig())
+        settings, _ = load_settings()
+        _stt = STT(STTConfig(
+            engine=settings.stt_engine,
+            groq_api_key=settings.groq_api_key,
+            groq_model=settings.stt_groq_model,
+            whisper_model=settings.stt_whisper_model,
+        ))
 
     return _stt
 

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Callable, Optional
 import wave
 
-import torch
 import numpy as np
 import sounddevice as sd
 
@@ -50,8 +49,11 @@ class VoiceLoop:
         self.tts = TTS(tts_cfg or TTSConfig())
         
         self.vad_model = None
+        self._torch = None
         if self.loop_cfg.use_vad:
             try:
+                import torch
+                self._torch = torch
                 print("📥 Cargando modelo Silero VAD...")
                 self.vad_model, utils = torch.hub.load(
                     repo_or_dir='snakers4/silero-vad',
@@ -78,7 +80,7 @@ class VoiceLoop:
         
         audio_chunks = []
         silence_chunks = 0
-        max_silence_chunks = 40  # ~1.3s de silencio (40 * 32ms)
+        max_silence_chunks = 22  # ~0.7s de silencio (22 * 32ms) — más responsive
         speech_started = False
         
         print("🎤 Escuchando... (habla ahora)")
@@ -114,10 +116,10 @@ class VoiceLoop:
                     continue
                 
                 # Detectar voz
-                audio_tensor = torch.from_numpy(audio_float)
+                audio_tensor = self._torch.from_numpy(audio_float)
                 speech_prob = self.vad_model(audio_tensor, sample_rate).item()
                 
-                if speech_prob > 0.5:  # Voz detectada
+                if speech_prob > 0.6:  # Voz detectada (umbral subido para menos falsos positivos)
                     if not speech_started:
                         speech_started = True
                         print("🗣️ Voz detectada")
