@@ -63,6 +63,9 @@ def build_default_registry() -> ToolRegistry:
         knowledge,
         organize_files,
         download_file,
+        system_info,
+        datetime_tool,
+        weather,
     )
 
     registry = ToolRegistry()
@@ -264,7 +267,7 @@ def build_default_registry() -> ToolRegistry:
         )
     )
 
-    # 14. Search and Download (NUEVO)
+    # 14. Search and Download
     registry.register(
         ToolSpec(
             name="search_and_download",
@@ -274,6 +277,44 @@ def build_default_registry() -> ToolRegistry:
                 "query": "Búsqueda del archivo (obligatorio)",
                 "file_type": "Tipo de archivo (ej: pdf, png, mp3, etc.)",
                 "organize": "Organizar automáticamente (bool, default true)",
+            },
+        )
+    )
+
+    # 15. System Info
+    registry.register(
+        ToolSpec(
+            name="system_info",
+            description="Monitorización del sistema: CPU, RAM, disco, batería, red, procesos activos, tiempo de actividad",
+            fn=system_info.run_system_info,
+            schema={
+                "action": "cpu, ram, disk, battery, network, processes, uptime, all (obligatorio)",
+                "top_n": "Número de procesos a mostrar (para processes, default 10)",
+            },
+        )
+    )
+
+    # 16. DateTime
+    registry.register(
+        ToolSpec(
+            name="datetime",
+            description="Fecha y hora actual con zona horaria, día de la semana, número de semana, etc.",
+            fn=datetime_tool.run_datetime,
+            schema={
+                "format": "full (todo), time (solo hora), date (solo fecha), timestamp (unix). Default: full",
+            },
+        )
+    )
+
+    # 17. Weather
+    registry.register(
+        ToolSpec(
+            name="weather",
+            description="Clima actual y pronóstico de cualquier ciudad (temperatura, humedad, viento, descripción). Sin API key.",
+            fn=weather.run_weather,
+            schema={
+                "city": "Ciudad (obligatorio, ej: Madrid, Barcelona, New York)",
+                "days": "Días de pronóstico adicionales (0-2, default 0 = solo hoy)",
             },
         )
     )

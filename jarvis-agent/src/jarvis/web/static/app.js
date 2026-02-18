@@ -214,6 +214,14 @@ function initInteractiveParticles() {
 
         setTimeout(() => input.focus(), 100);
 
+        // Mostrar briefing si llegó antes de abrir el chat
+        if (window._pendingBriefing && window.showBriefing) {
+            setTimeout(() => {
+                window.showBriefing(window._pendingBriefing);
+                window._pendingBriefing = null;
+            }, 300);
+        }
+
         // Iniciar escucha de wake word
         initWakeWordDetection(input);
     }
@@ -306,8 +314,11 @@ function initInteractiveParticles() {
         }
     }
 
-    // Indicador de "pensando"
+    // Indicador de "pensando" + streaming bubble
     let thinkingEl = null;
+    let streamingEl = null;    // bubble activo durante streaming
+    let streamingText = '';    // acumulador de texto
+
     function showThinking() {
         if (!chatContainer || thinkingEl) return;
         thinkingEl = document.createElement('div');
@@ -321,6 +332,86 @@ function initInteractiveParticles() {
             thinkingEl.remove();
             thinkingEl = null;
         }
+    }
+
+    // Inicia un bubble de streaming (reemplaza el thinking)
+    function startStreamBubble() {
+        hideThinking();
+        if (streamingEl) return;
+
+        streamingText = '';
+        streamingEl = document.createElement('div');
+        streamingEl.className = 'message assistant streaming';
+
+        const textEl = document.createElement('span');
+        textEl.className = 'stream-text';
+        streamingEl.appendChild(textEl);
+
+        // Cursor parpadeante
+        const cursor = document.createElement('span');
+        cursor.className = 'stream-cursor';
+        cursor.textContent = '▋';
+        streamingEl.appendChild(cursor);
+
+        chatContainer.appendChild(streamingEl);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // Añade un chunk al bubble de streaming
+    function appendStreamChunk(chunk) {
+        if (!streamingEl) startStreamBubble();
+        streamingText += chunk;
+        const textEl = streamingEl.querySelector('.stream-text');
+        if (textEl) {
+            textEl.innerHTML = renderContent(streamingText);
+            // MathJax si aplica
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise([textEl]).catch(() => {});
+            }
+        }
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // Finaliza el bubble de streaming (quita cursor, añade botones)
+    function finishStreamBubble() {
+        if (!streamingEl) return;
+
+        // Quitar cursor
+        const cursor = streamingEl.querySelector('.stream-cursor');
+        if (cursor) cursor.remove();
+
+        // Añadir multiline class si aplica
+        const isMultiline = streamingText.includes('\n') || streamingText.length > 80;
+        if (isMultiline) streamingEl.classList.add('multiline');
+        streamingEl.classList.remove('streaming');
+
+        // Botón copiar
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'msg-copy-btn';
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+        const capturedText = streamingText;
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(capturedText).then(() => {
+                copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>';
+                setTimeout(() => {
+                    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+                }, 1500);
+            });
+        });
+
+        // Botón TTS
+        const ttsBtn = document.createElement('button');
+        ttsBtn.className = 'msg-tts-btn';
+        ttsBtn.title = 'Escuchar mensaje';
+        ttsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+        ttsBtn.addEventListener('click', () => speakText(capturedText, ttsBtn));
+
+        streamingEl.appendChild(copyBtn);
+        streamingEl.appendChild(ttsBtn);
+
+        streamingEl = null;
+        streamingText = '';
+        isTyping = false;
     }
 
     // Enviar mensaje
@@ -342,6 +433,27 @@ function initInteractiveParticles() {
             }, 500);
         }
     }
+
+    // Mostrar briefing de bienvenida
+    window.showBriefing = function(data) {
+        if (!chatContainer) return;
+        const { greeting, time, date, system } = data;
+
+        let sysText = '';
+        if (system && Object.keys(system).length > 0) {
+            const parts = [];
+            if (system.cpu_pct !== undefined) parts.push(`CPU ${system.cpu_pct}%`);
+            if (system.ram_pct !== undefined) parts.push(`RAM ${system.ram_pct}%`);
+            if (system.battery_pct !== undefined) {
+                const plug = system.battery_plugged ? '⚡' : '🔋';
+                parts.push(`${plug} ${system.battery_pct}%`);
+            }
+            if (parts.length > 0) sysText = ` | ${parts.join(' · ')}`;
+        }
+
+        const content = `**${greeting}, señor.** Son las ${time} del ${date}.${sysText}\n\nTodos los sistemas operativos. ¿En qué puedo asistirle?`;
+        addMessage(content, 'assistant briefing');
+    };
     
     // TTS: Hablar texto usando el servidor
     async function speakText(text, button) {
@@ -476,11 +588,20 @@ function initInteractiveParticles() {
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
     
-    // Exponer función globalmente para recibir respuestas
+    // Exponer funciones globalmente para el WebSocket handler
     window.receiveJarvisMessage = function(content) {
         hideThinking();
+        finishStreamBubble();
         addMessage(content, 'assistant');
         isTyping = false;
+    };
+
+    window.appendStreamChunk = function(chunk) {
+        appendStreamChunk(chunk);
+    };
+
+    window.finishStreamBubble = function() {
+        finishStreamBubble();
     };
     
     // Clase de partícula de esfera
@@ -831,12 +952,47 @@ function connect() {
 function handleMessage(event) {
     try {
         const data = JSON.parse(event.data);
-        console.log('📥 Mensaje recibido:', data);
-        
-        if (data.type === 'assistant_message') {
-            if (window.receiveJarvisMessage) {
-                window.receiveJarvisMessage(data.content);
-            }
+
+        switch (data.type) {
+            case 'briefing':
+                // Briefing proactivo al conectar — mostrar solo si hay chatContainer
+                if (chatContainer && window.showBriefing) {
+                    window.showBriefing(data.data);
+                } else {
+                    // Guardar para mostrar cuando el chat esté listo
+                    window._pendingBriefing = data.data;
+                }
+                break;
+
+            case 'token':
+                // Chunk de streaming: acumular en bubble activo
+                if (window.appendStreamChunk) {
+                    window.appendStreamChunk(data.content);
+                }
+                break;
+
+            case 'done':
+                // Fin del streaming: finalizar bubble
+                if (window.finishStreamBubble) {
+                    window.finishStreamBubble();
+                }
+                break;
+
+            case 'assistant_message':
+                // Mensaje completo (fallback sin streaming)
+                if (window.receiveJarvisMessage) {
+                    window.receiveJarvisMessage(data.content);
+                }
+                break;
+
+            case 'error':
+                if (window.receiveJarvisMessage) {
+                    window.receiveJarvisMessage(`⚠️ ${data.content}`);
+                }
+                break;
+
+            default:
+                console.log('📥 Mensaje desconocido:', data);
         }
     } catch (error) {
         console.error('❌ Error procesando mensaje:', error);

@@ -233,6 +233,27 @@ body {
     }
 }
 
+/* Streaming: cursor parpadeante */
+.stream-cursor {
+    display: inline-block;
+    color: rgba(0, 180, 255, 0.9);
+    animation: cursorBlink 0.8s step-end infinite;
+    margin-left: 2px;
+    font-size: 0.85em;
+    vertical-align: baseline;
+}
+
+@keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+/* Briefing: mensaje especial al conectar */
+.message.briefing {
+    border-left: 3px solid rgba(0, 180, 255, 0.8);
+    background: rgba(0, 180, 255, 0.06);
+}
+
 /* Markdown en mensajes */
 .message p {
     margin: 0 0 8px 0;

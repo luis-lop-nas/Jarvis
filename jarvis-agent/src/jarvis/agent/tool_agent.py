@@ -9,16 +9,18 @@ Agente con Claude Sonnet 4.6 como cerebro principal.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import queue as queue_module
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import requests
 
 from jarvis.agent.prompts import SYSTEM_PROMPT
-from jarvis.agent.runner import AgentConfig, AgentState
-from jarvis.agent.state import truncate_history
+from jarvis.agent.runner import AgentConfig
+from jarvis.agent.state import AgentState, truncate_history
 from jarvis.tools.registry import ToolRegistry, build_default_registry
 
 
@@ -576,6 +578,93 @@ class ToolAgent:
 
         # Ollama: fallback local
         return self._run_with_ollama(user_text, use_tools=True)
+
+    # ------------------------------------------------------------------
+    # Streaming (Groq)
+    # ------------------------------------------------------------------
+
+    async def run_stream(self, user_text: str) -> AsyncGenerator[str, None]:
+        """
+        Versión streaming de run() para Groq.
+        Yield-ea chunks de texto según llegan del LLM.
+        Si no hay Groq disponible, hace run() normal y yield-ea todo de golpe.
+        """
+        user_text = (user_text or "").strip()
+        if not user_text:
+            yield "Dime qué quieres que haga."
+            return
+
+        self.state.add_user(user_text)
+        self._save_message("user", user_text)
+
+        # Claude: no streaming en este modo — fallback síncrono
+        if self.claude_client and self.config.use_claude:
+            # _run_with_claude ya maneja estado y memoria
+            text = await asyncio.to_thread(self._run_with_claude, user_text)
+            yield text
+            return
+
+        # Groq streaming nativo
+        if self.groq_client and self.config.use_groq:
+            messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            for msg in truncate_history(self.state.history, max_messages=20):
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and isinstance(content, str):
+                    messages.append({"role": role, "content": content})
+
+            q: queue_module.Queue = queue_module.Queue()
+
+            def _stream_worker() -> None:
+                try:
+                    response = self.groq_client.chat.completions.create(
+                        model=self.config.groq_model,
+                        messages=messages,
+                        max_tokens=2000,
+                        temperature=0.7,
+                        stream=True,
+                    )
+                    for chunk in response:
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            q.put(("chunk", delta))
+                    q.put(("done", None))
+                except Exception as e:
+                    q.put(("error", str(e)))
+
+            loop = asyncio.get_event_loop()
+            future = loop.run_in_executor(None, _stream_worker)
+
+            full_text = ""
+            while True:
+                try:
+                    kind, data = q.get_nowait()
+                except queue_module.Empty:
+                    await asyncio.sleep(0.01)
+                    continue
+
+                if kind == "done":
+                    break
+                if kind == "error":
+                    yield f"Error Groq: {data}"
+                    return
+                full_text += data
+                yield data
+
+            await future  # asegurar que el thread terminó limpiamente
+
+            full_text = full_text.strip() or "No generé respuesta."
+            self.state.add_assistant(full_text)
+            self._save_message("assistant", full_text)
+            return
+
+        # Fallback: Gemini / Ollama (no streaming)
+        # Nota: ya añadimos user al state arriba, no llamar run() completo
+        if self.gemini_client and self.config.use_gemini:
+            text = await asyncio.to_thread(self._run_with_gemini, user_text)
+        else:
+            text = await asyncio.to_thread(self._run_with_ollama, user_text, True)
+        yield text
 
 
 def tool_agent_from_settings(

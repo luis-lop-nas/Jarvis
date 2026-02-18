@@ -1,4 +1,3 @@
-cat > Claude.md << 'EOF'
 # JARVIS - Advanced AI Assistant
 
 ## 📋 Descripción del Proyecto
@@ -18,257 +17,274 @@ JARVIS (Just A Rather Very Intelligent System) es un asistente de IA avanzado co
 2. **Backend (Python)**
    - FastAPI para servidor web
    - WebSocket para comunicación en tiempo real
-   - Procesamiento de IA híbrido (Groq + Ollama)
+   - Motor LLM con prioridad: Claude → Gemini → Groq → Ollama
    - Sistema RAG con ChromaDB
+   - Memoria persistente en SQLite
 
 3. **Capacidades de IA**
-   - **Groq API**: Respuestas conversacionales rápidas
-     - Modelo: `llama-3.3-70b-versatile` (texto)
-     - Modelo: `llama-3.2-90b-vision-preview` (visión)
-   - **Ollama**: Tareas con herramientas habilitadas
-   - **Voice**: STT (Speech-to-Text) y TTS (Text-to-Speech)
-   - **Vision**: Análisis de pantalla usando APIs de accesibilidad + capturas
+   - **Claude (Anthropic)**: Motor principal con tool use nativo
+   - **Gemini (Google)**: Alternativa cloud con tool use nativo (no disponible en EU free tier)
+   - **Groq API**: `llama-3.3-70b-versatile` — motor activo actualmente (gratis, 14.400 req/día)
+   - **Ollama**: Fallback local (`llama3.2:3b` instalado)
+   - **Voice**: STT (Groq Whisper) y TTS (ElevenLabs / macOS)
+   - **Vision**: Análisis de pantalla con Quartz + APIs de accesibilidad
 
 ## 📁 Estructura del Proyecto
+
 ```
 jarvis-agent/
-├── src/
-│   └── jarvis/
-│       ├── agent/           # Lógica del agente IA
-│       ├── memory/          # Sistema de memoria (ChromaDB)
-│       ├── voice/           # STT/TTS
-│       ├── vision/          # Computer vision
-│       ├── web/             # Servidor web
-│       │   ├── server.py    # FastAPI server
-│       │   └── static/      # Frontend
-│       │       ├── index.html
-│       │       ├── style.css
-│       │       └── app.js
-│       ├── tools/           # Herramientas del agente
-│       └── config.py        # Configuración
-├── data/                    # ChromaDB storage
-├── scripts/                 # Scripts auxiliares
-├── .env                     # Variables de entorno
-├── pyproject.toml          # Dependencias Python
-└── Claude.md               # Este archivo
+├── .env                     # Variables de entorno (API keys)
+├── .env.example             # Plantilla de .env
+├── pyproject.toml           # Dependencias y configuración del paquete
+├── README.md
+├── data/                    # Datos en tiempo de ejecución (NO en git)
+│   ├── jarvis.db            # SQLite — memoria persistente de sesiones
+│   ├── knowledge/           # ChromaDB vector database
+│   ├── knowledge_seed/      # Documentos iniciales para la KB
+│   ├── logs/                # Logs de sesiones CLI
+│   ├── voices/              # Modelos TTS locales (Piper)
+│   └── workspace/           # Workspace del agente para archivos temporales
+├── sandbox/
+│   └── docker/              # Dockerfiles para sandbox de ejecución de código
+│       ├── Dockerfile.python
+│       └── Dockerfile.node
+├── scripts/                 # Scripts de utilidad
+│   ├── init_knowledge.py    # Inicializa la base de conocimiento
+│   └── generate_knowledge_base.py
+├── tests/                   # Tests (vacío, listo para crecer)
+└── src/
+    └── jarvis/
+        ├── __init__.py
+        ├── config.py            # Settings centralizados (pydantic-settings)
+        ├── main.py              # Entry point: --web / --voice / CLI
+        ├── agent/
+        │   ├── runner.py        # AgentConfig (base dataclass)
+        │   ├── state.py         # AgentState + truncate_history + helpers
+        │   ├── tool_agent.py    # Motor principal: Claude/Gemini/Groq/Ollama
+        │   └── prompts.py       # SYSTEM_PROMPT de JARVIS
+        ├── knowledge/
+        │   └── knowledge_base.py  # RAG con ChromaDB + sentence-transformers
+        ├── memory/
+        │   ├── schema.sql       # Schema SQLite (sessions, messages, tool_events)
+        │   └── store.py         # MemoryStore — conexión persistente, thread-safe
+        ├── tools/
+        │   ├── registry.py      # ToolRegistry + build_default_registry()
+        │   ├── shell.py         # Ejecutar comandos shell
+        │   ├── filesystem.py    # Operaciones de archivos
+        │   ├── open_app.py      # Abrir apps/URLs en macOS
+        │   ├── run_code.py      # Ejecutar Python/Node en Docker sandbox
+        │   ├── web_search.py    # Búsqueda web (DuckDuckGo)
+        │   ├── spotify.py       # Control de Spotify
+        │   ├── calendar.py      # Consultar/crear eventos
+        │   ├── email.py         # Enviar emails via Mail.app
+        │   ├── vision.py        # Análisis de pantalla
+        │   ├── code_assistant.py # Generar código + abrir en VS Code
+        │   ├── knowledge.py     # Wrapper tool para knowledge_base
+        │   ├── organize_files.py # Organizar archivos automáticamente
+        │   └── download_file.py  # Descargar archivos de internet
+        ├── ui/
+        │   └── cli.py           # CLI interactivo con Rich
+        ├── vision/
+        │   ├── screenshot.py    # Captura de pantalla (Quartz)
+        │   ├── vision_analyzer.py # Análisis con LLM
+        │   └── accessibility.py # Contexto de app activa (macOS)
+        ├── voice/
+        │   ├── stt.py           # Speech-to-Text (Groq Whisper / local)
+        │   ├── tts.py           # Text-to-Speech (ElevenLabs / Piper / macOS)
+        │   ├── wake_word.py     # Detección wake word (OpenWakeWord / Porcupine)
+        │   └── voice_loop.py    # Loop principal de voz
+        └── web/
+            ├── server.py        # FastAPI server
+            └── static/
+                ├── index.html
+                ├── style.css
+                └── app.js
 ```
 
-## 🎨 Sistema Visual (Frontend)
+## ⚙️ Configuración (.env)
 
-### Nube de Puntos 3D
+```env
+# LLM principal (activar solo uno)
+USE_CLAUDE=false
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=claude-sonnet-4-6
 
-**Características:**
-- **1200 partículas** en distribución de Fibonacci (esfera)
-- **200 partículas flotantes** ambientales
-- **Física individual**: cada partícula con rotación, velocidad y comportamiento únicos
-- **Interactividad con ratón**: 40% de partículas reaccionan (optimización)
-- **Profundidad 3D**: proyección perspectiva con sorting por eje Z
+USE_GEMINI=false                    # No disponible en EU (free tier = 0)
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.0-flash
 
-**Parámetros de Velocidad (LENTOS para elegancia):**
-- Rotación: `0.0004` (esfera) / `0.004` (flotantes)
-- Ruido: `0.00002` 
-- Transiciones: `0.004` (muy suave)
-- Pulso: `0.002-0.004`
+USE_GROQ=true                       # ACTIVO — llama-3.3-70b-versatile
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
 
-**Estados del Sistema:**
-1. **idle**: Esfera al 80% de perfección, centro de pantalla
-2. **compact**: Al hacer click, se compacta a 100% (transición ~2s)
-3. **active**: Al escribir, se mueve arriba-izquierda y vibra orgánicamente
+# STT / TTS
+STT_ENGINE=groq
+STT_GROQ_MODEL=whisper-large-v3-turbo
+TTS_ENGINE=elevenlabs
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
 
-### Colores
-- Azul eléctrico: `RGB(0, 180, 255)`
-- Azul brillante: `RGB(100, 220, 255)`
-- Núcleo: Blanco con glow
+# Wake word
+WAKE_WORD_ENGINE=openwakeword
+WAKE_WORD=jarvis
+```
 
-## 🔧 Tecnologías Utilizadas
+## 🚀 Arrancar el Servidor
 
-### Backend
-- **Python 3.12**
-- **FastAPI** + **python-multipart**: Servidor web
-- **WebSocket**: Comunicación en tiempo real
-- **ChromaDB** + **sentence-transformers**: Vector database
-- **Groq API**: LLM rápido para conversación
-- **Ollama**: LLM local con tools
-- **macOS Frameworks**: Quartz (screenshots), AppKit (app context)
-
-### Frontend
-- **Vanilla JavaScript**: Sin frameworks
-- **Canvas API**: Renderizado de partículas
-- **WebSocket API**: Comunicación bidireccional
-- **CSS3**: Animaciones y estilos
-
-## 🚀 Instalación y Uso
-
-### 1. Configurar Entorno
 ```bash
 cd /Users/luichi/Documents/Jarvis/jarvis-agent
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### 2. Configurar Variables de Entorno
-
-Archivo `.env`:
-```env
-GROQ_API_KEY=tu_clave_aqui
-# Otras configuraciones...
-```
-
-### 3. Iniciar Servidor Web
-```bash
 source .venv/bin/activate
 PYTHONPATH=src uvicorn jarvis.web.server:app --host 0.0.0.0 --port 8000
 ```
 
-Luego abrir: `http://localhost:8000`
+Abrir: `http://localhost:8000`
 
-### 4. Usar JARVIS en Terminal (CLI)
+El servidor inicializa agente + STT + TTS en el evento `startup` de FastAPI (no en el primer mensaje).
+
+## 🖥️ Modos de Uso
+
 ```bash
-source .venv/bin/activate
-python -m jarvis.cli
+# Web (recomendado)
+python -m jarvis --web --port 8000
+
+# CLI interactivo
+python -m jarvis
+
+# Voz con wake word
+python -m jarvis --voice
 ```
-
-## 🎯 Flujo de Interacción Web
-
-1. **Usuario ve la esfera** (estado idle, 80% perfecta, partículas lentas)
-2. **Click en la esfera** → Compactación suave a 100% (~2 segundos)
-3. **Aparece barra de búsqueda** (animación de 1.2s)
-4. **Usuario escribe** → JARVIS se mueve arriba-izquierda + vibración orgánica
-5. **Enter** → Envío por WebSocket
-6. **JARVIS vibra** mientras procesa
-7. **Respuesta aparece** en chat + JARVIS deja de vibrar
 
 ## 🔌 WebSocket API
 
-### Cliente → Servidor
+**Cliente → Servidor:**
 ```json
-{
-  "message": "texto del usuario"
-}
+{ "message": "texto del usuario" }
 ```
 
-### Servidor → Cliente
+**Servidor → Cliente:**
 ```json
-{
-  "type": "assistant_message",
-  "content": "respuesta de JARVIS"
-}
+{ "type": "user_message" | "assistant_message" | "error", "content": "..." }
 ```
 
-## 🧠 Sistema de Memoria (RAG)
+**Endpoints REST:**
+- `GET /` — Interfaz web
+- `GET /health` — Health check
+- `POST /transcribe` — Transcribir audio (multipart/form-data)
+- `POST /speak` — TTS: `{ "text": "..." }`
 
-- **ChromaDB**: Vector database
-- **sentence-transformers**: Embeddings
-- **Capacidad**: Diseñado para 5,000 documentos
-- **Persistencia**: Almacenamiento local en `data/`
+## 🧠 Motor de Agente (tool_agent.py)
 
-## 🎤 Capacidades de Voz
+**Prioridad de motores:** Claude → Gemini → Groq → Ollama
 
-- **STT**: Speech-to-Text para comandos de voz
-- **TTS**: Text-to-Speech para respuestas audibles
-- **Wake Word**: "Hey Jarvis" (configurable)
+Cada motor tiene su propio método `_run_with_*`. Los schemas de herramientas se precalculan en `__init__` y se cachean (`_cached_claude_tools`, `_cached_groq_tools`, etc.).
 
-## 👁️ Sistema de Visión
+El historial se trunca a los últimos **20 mensajes** en cada llamada (`truncate_history` de `state.py`).
 
-- **Screen Analysis**: Captura y análisis de pantalla
-- **Accessibility APIs**: Contexto de aplicación activa (macOS)
-- **Groq Vision**: Modelo `llama-3.2-90b-vision-preview`
+## 🧱 Módulos Clave
 
-## 🛠️ Herramientas Disponibles
+### `agent/state.py`
+- `AgentState` — historial en memoria (memoria corta de la sesión)
+- `truncate_history(history, max_messages=20)` — evita que el contexto crezca sin límite
+- `count_tokens_estimate(messages)` — estimación rápida de tokens
 
-- **Filesystem**: Operaciones de archivos
-- **App Launcher**: Abrir aplicaciones
-- **Shell Commands**: Ejecutar comandos
-- **Web Search**: Búsqueda en internet
-- **VS Code Integration**: Deployment automático de código
+### `agent/runner.py`
+- `AgentConfig` — dataclass base con `debug: bool`
 
-## ⚙️ Configuración de Rendimiento
+### `memory/store.py`
+- `MemoryStore` — conexión SQLite persistente con `threading.Lock`
+- Tablas: `sessions`, `messages`, `tool_events`
+- WAL mode habilitado para concurrencia
 
-### Optimizaciones Frontend
-- **Throttled mouse events**: requestAnimationFrame
-- **Cacheo de proyección 2D**: Calculado 1 vez por frame
-- **Sorting selectivo**: Solo partículas de esfera
-- **Conexiones reducidas**: 1 de cada 8 partículas, cada 2 frames
-- **40% de interacción**: Solo algunas partículas reaccionan al ratón
+### `tools/registry.py`
+- `ToolRegistry` — registro central de herramientas
+- `build_default_registry()` — construye el registro con las 14 tools disponibles
 
-### Velocidades Ajustadas
-- **Movimiento casi imperceptible** en estado idle
-- **Transiciones ultra suaves** (factor 0.004)
-- **Vibración orgánica individual** (cada partícula única)
+## 🛠️ Herramientas Disponibles (14)
 
-## 📝 Principios de Diseño
+| Tool | Descripción |
+|------|-------------|
+| `shell` | Ejecutar comandos shell |
+| `filesystem` | Leer/escribir/mover/copiar archivos |
+| `open_app` | Abrir apps, URLs o archivos en macOS |
+| `run_code` | Ejecutar Python/Node en Docker sandbox |
+| `web_search` | Búsqueda DuckDuckGo |
+| `spotify` | Control de Spotify |
+| `calendar` | Consultar/crear eventos de calendario |
+| `send_email` | Enviar emails via Mail.app |
+| `vision` | Analizar pantalla (describe/OCR/contexto) |
+| `code_assistant` | Generar código + abrir en VS Code |
+| `knowledge` | Buscar/añadir en base de conocimiento RAG |
+| `organize_files` | Organizar archivos por tipo/fecha |
+| `download_file` | Descargar archivos de internet |
+| `search_and_download` | Buscar y descargar automáticamente |
 
-1. **Elegancia sobre velocidad**: Movimientos lentos y sutiles
-2. **Transiciones naturales**: Curvas de easing suaves
-3. **Física realista**: Inercia, fricción, fuerzas
-4. **Individualidad**: Cada partícula es única
-5. **Respuesta fluida**: 60 FPS sin lag
+## 🎨 Sistema Visual (Frontend)
 
-## 🔄 Enfoque de Desarrollo
+**Nube de Puntos 3D:**
+- 1200 partículas en distribución de Fibonacci (esfera)
+- 200 partículas flotantes ambientales
+- Física individual por partícula (rotación, velocidad, comportamiento)
+- 40% de partículas reaccionan al ratón (optimización)
 
-- **Iterativo**: Desarrollo en fases incrementales
-- **Terminal-first**: Todo por comandos (no GUI)
-- **Híbrido**: Combinar múltiples tecnologías (Groq + Ollama)
-- **Optimización constante**: Balance rendimiento/calidad
+**Estados:**
+1. `idle` — Esfera al 80%, centro de pantalla, movimiento casi imperceptible
+2. `compact` — Al hacer click, compacta al 100% (~2s)
+3. `active` — Al escribir, se mueve arriba-izquierda y vibra orgánicamente
 
-## 🎨 Paleta de Colores
+**Paleta de colores:**
+| Elemento | Color |
+|----------|-------|
+| Azul eléctrico | `#00B4FF` / `RGB(0, 180, 255)` |
+| Azul brillante | `#64DCFF` / `RGB(100, 220, 255)` |
+| Núcleo | `#FFFFFF` |
+| Fondo | `#000000` |
 
-| Elemento | Color | RGB |
-|----------|-------|-----|
-| Azul eléctrico | `#00B4FF` | `0, 180, 255` |
-| Azul brillante | `#64DCFF` | `100, 220, 255` |
-| Núcleo | `#FFFFFF` | `255, 255, 255` |
-| Fondo | `#000000` | `0, 0, 0` |
+## ⚡ Optimizaciones Backend Aplicadas
+
+- **Startup FastAPI**: agente + STT + TTS se inicializan al arrancar el servidor, no en el primer mensaje
+- **`load_settings()` único**: una sola lectura del `.env` al inicio
+- **ffmpeg async**: conversión de audio en `asyncio.to_thread` (no bloquea el event loop)
+- **Schemas cacheados**: `_cached_claude_tools`, `_cached_gemini_tools`, `_cached_ollama_tools` precalculados en `__init__`
+- **Historial truncado**: máximo 20 mensajes enviados al LLM (evita latencia en sesiones largas)
+- **SQLite persistente**: una sola conexión con `threading.Lock` en lugar de abrir/cerrar por operación
 
 ## 🐛 Debugging
 
-### Ver logs del servidor:
 ```bash
-# El servidor FastAPI imprime logs en consola
-tail -f logs/jarvis.log  # Si existe
+# Ver logs del servidor en consola (uvicorn)
+PYTHONPATH=src uvicorn jarvis.web.server:app --log-level debug
+
+# Logs de sesiones CLI
+ls data/logs/
+
+# Health check
+curl http://localhost:8000/health
+
+# Test WebSocket rápido
+python -c "
+import asyncio, websockets, json
+async def t():
+    async with websockets.connect('ws://localhost:8000/ws') as ws:
+        await ws.send(json.dumps({'message': 'hola'}))
+        print(await ws.recv())
+asyncio.run(t())
+"
 ```
 
-### Consola del navegador:
-- **F12** o **Cmd+Option+I**
-- Ver mensajes WebSocket
-- Ver errores JavaScript
+## 🔮 Próximas Mejoras
 
-### Verificar WebSocket:
-```javascript
-// En consola del navegador
-console.log('WS conectado:', isConnected);
-```
-
-## 📚 Recursos y Referencias
-
-- **Distribución de Fibonacci**: Para distribución uniforme en esfera
-- **Física de partículas**: Inercia, fricción, fuerzas
-- **WebSocket**: Comunicación full-duplex
-- **Canvas API**: Renderizado 2D de alto rendimiento
-- **ChromaDB**: Vector database para RAG
-
-## 🔮 Futuras Mejoras
-
-- [ ] Reconocimiento de voz en web
-- [ ] Más herramientas (calendar, email, etc.)
-- [ ] Temas personalizables
-- [ ] Modo oscuro/claro
-- [ ] Historial de conversaciones persistente
+- [ ] Reconocimiento de voz en web (MediaRecorder → /transcribe)
+- [ ] Streaming de respuestas (SSE o WS chunked)
+- [ ] Tests unitarios en `tests/`
+- [ ] Historial de conversaciones visible en UI
 - [ ] Mobile responsive
 - [ ] Exportar conversaciones
-- [ ] Integración con más APIs
-
-## 📄 Licencia
-
-Proyecto personal de desarrollo
 
 ## 👤 Autor
 
-**Luichi** - Desarrollador principal
+**Luichi** — Desarrollador principal
 
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 1.0.0
-EOF
+**Versión**: 1.1.0
