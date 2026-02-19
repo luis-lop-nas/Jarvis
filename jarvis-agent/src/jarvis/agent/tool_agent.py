@@ -18,7 +18,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import requests
 
-from jarvis.agent.prompts import SYSTEM_PROMPT
+from jarvis.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_GROQ
 from jarvis.agent.runner import AgentConfig
 from jarvis.agent.state import AgentState, truncate_history
 from jarvis.tools.registry import ToolRegistry, build_default_registry
@@ -179,8 +179,26 @@ class ToolAgent:
 
         return tools
 
+    @staticmethod
+    def _field_type(desc_str: str) -> str:
+        """Detecta el tipo JSON de un campo a partir de su descripción."""
+        import re
+        dl = desc_str.lower()
+        # Booleano
+        if "bool" in dl:
+            return "boolean"
+        # Entero — búsqueda por palabra completa para evitar falsos positivos
+        # (e.g., "int" dentro de "inteligente")
+        _INT_RE = re.compile(
+            r"\b(int(eger)?|n[úu]mero|segundos|timeout|top_n|l[íi]mit|"
+            r"cantidad|count|d[íi]as?|days?)\b"
+        )
+        if _INT_RE.search(dl):
+            return "integer"
+        return "string"
+
     def _tools_for_ollama(self) -> List[Dict[str, Any]]:
-        """Schema de tools en formato Ollama."""
+        """Schema de tools en formato OpenAI/Groq/Ollama."""
         tools: List[Dict[str, Any]] = []
 
         for name, spec in self.registry.list().items():
@@ -189,32 +207,26 @@ class ToolAgent:
 
             for field_name, desc in (spec.schema or {}).items():
                 desc_str = str(desc)
-                ftype = "string"
-                if "int" in desc_str.lower():
-                    ftype = "integer"
-                elif "bool" in desc_str.lower():
-                    ftype = "boolean"
-
                 properties[field_name] = {
-                    "type": ftype,
+                    "type": self._field_type(desc_str),
                     "description": desc_str,
                 }
-
                 if "obligatorio" in desc_str.lower():
                     required.append(field_name)
 
-            parameters = (
-                {"type": "object", "properties": properties, "required": required}
-                if properties
-                else {"type": "object"}
-            )
+            # No incluir "required" vacío — algunos modelos lo usan mal
+            params: Dict[str, Any] = {"type": "object"}
+            if properties:
+                params["properties"] = properties
+            if required:
+                params["required"] = required
 
             tools.append({
                 "type": "function",
                 "function": {
                     "name": spec.name,
                     "description": spec.description,
-                    "parameters": parameters,
+                    "parameters": params,
                 },
             })
 
@@ -447,8 +459,96 @@ class ToolAgent:
     # Motor Groq (fallback)
     # ------------------------------------------------------------------
 
+    def _run_with_groq(self, user_text: str) -> str:
+        """Groq con tool calling nativo (mismo formato OpenAI)."""
+        # SYSTEM_PROMPT_GROQ: versión compacta sin ejemplos de código Python que
+        # confunden al modelo llama sobre el formato de function calling de la API.
+        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
+        for msg in truncate_history(self.state.history, max_messages=20):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+
+        tools = self._cached_ollama_tools  # formato OpenAI — idéntico al que usa Groq
+
+        for _ in range(self.config.max_tool_loops):
+            try:
+                response = self.groq_client.chat.completions.create(
+                    model=self.config.groq_model,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    tool_choice="auto" if tools else None,
+                    parallel_tool_calls=False,
+                    max_tokens=2000,
+                    temperature=0.7,
+                )
+            except Exception as e:
+                # Si el modelo genera una tool call malformada, reintentar sin tools
+                err_str = str(e)
+                if "tool_use_failed" in err_str or "tool call validation failed" in err_str:
+                    if self.config.debug:
+                        print(f"⚠️ Groq tool_use_failed — reintentando sin tools")
+                    return self._run_with_groq_simple(user_text)
+                err = f"Error Groq: {e}"
+                self.state.add_assistant(err)
+                self._save_message("assistant", err)
+                return err
+
+            choice = response.choices[0]
+            msg_out = choice.message
+
+            # Respuesta final (sin tool calls)
+            if not msg_out.tool_calls:
+                text = (msg_out.content or "").strip() or "No generé respuesta."
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
+
+            # Groq quiere usar herramientas — añadir respuesta al historial
+            messages.append({
+                "role": "assistant",
+                "content": msg_out.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg_out.tool_calls
+                ],
+            })
+
+            # Ejecutar cada tool y devolver resultados
+            for tc in msg_out.tool_calls:
+                tool_name = tc.function.name
+                try:
+                    tool_args = json.loads(tc.function.arguments)
+                except Exception:
+                    tool_args = {}
+
+                if self.config.debug:
+                    print(f"🔧 Groq usa: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
+
+                tool_out = self.registry.call(tool_name, tool_args)
+                self._save_tool_event(tool_name, tool_args, tool_out)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(tool_out, ensure_ascii=False),
+                })
+
+        msg = "Límite de iteraciones de herramientas alcanzado."
+        self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
+        return msg
+
     def _run_with_groq_simple(self, user_text: str) -> str:
-        """Groq para conversación (fallback de Claude)."""
+        """Groq sin tools — solo usado como fallback de Claude/Gemini en caso de error."""
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
         for msg in truncate_history(self.state.history, max_messages=20):
             role = msg.get("role")
@@ -572,9 +672,9 @@ class ToolAgent:
         if self.gemini_client and self.config.use_gemini:
             return self._run_with_gemini(user_text)
 
-        # Groq: solo conversación (sin tools)
+        # Groq: conversación + tools nativo
         if self.groq_client and self.config.use_groq:
-            return self._run_with_groq_simple(user_text)
+            return self._run_with_groq(user_text)
 
         # Ollama: fallback local
         return self._run_with_ollama(user_text, use_tools=True)

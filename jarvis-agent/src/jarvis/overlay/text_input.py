@@ -113,6 +113,10 @@ class TextInputPopup:
 
     def _show(self) -> None:
         """Crea y muestra el popup. Llamado en el hilo principal."""
+        # Guardar app activa para restaurar el foco al cerrar
+        import AppKit as _AppKit
+        self._prev_app = _AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+
         screen = AppKit.NSScreen.mainScreen()
         sf     = screen.frame()
         sw, sh = sf.size.width, sf.size.height
@@ -188,3 +192,8 @@ class TextInputPopup:
         if self._window is not None:
             self._window.orderOut_(None)
             self._window = None
+        # Devolver el foco a la app que estaba activa antes del popup
+        prev = getattr(self, "_prev_app", None)
+        if prev is not None:
+            prev.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+            self._prev_app = None

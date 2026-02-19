@@ -58,6 +58,9 @@ class JarvisView(AppKit.NSView):
         # Nivel de audio para VU meter (0.0 = silencio, 1.0 = máximo)
         self._audio_level: float = 0.0
 
+        # Referencia a NSWindow para toggle de click-through
+        self._window = None
+
         # Timer a 30 fps — llama a tick_ en cada frame
         self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1 / 30.0, self, "tick:", None, True
@@ -120,6 +123,14 @@ class JarvisView(AppKit.NSView):
         if self._particles is not None:
             self._particles.update(1 / 30.0)
         self.setNeedsDisplay_(True)
+
+        # Toggle click-through: ignorar eventos excepto cuando el cursor está cerca del orb
+        if self._window is not None:
+            loc = AppKit.NSEvent.mouseLocation()
+            dx = loc.x - self._orb_x
+            dy = loc.y - self._orb_y
+            near = (dx * dx + dy * dy) <= (self._HIT_RADIUS + 8.0) ** 2
+            self._window.setIgnoresMouseEvents_(not near)
 
     def drawRect_(self, dirty_rect: AppKit.NSRect) -> None:
         """Dibuja el orb con sus halos de glow. Llamado en cada frame."""
@@ -216,6 +227,10 @@ class JarvisView(AppKit.NSView):
         self._particles = particles
 
     # ----------------------------------------------------------- state control
+
+    def set_window(self, win) -> None:
+        """Referencia al NSWindow para toggle de click-through por proximidad."""
+        self._window = win
 
     def set_state(self, state: str) -> None:
         """Cambiar estado del orb. Llamar SIEMPRE desde el hilo principal."""

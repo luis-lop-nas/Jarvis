@@ -31,8 +31,8 @@ class JarvisWindow:
         self.win.setOpaque_(False)
         self.win.setBackgroundColor_(AppKit.NSColor.clearColor())
 
-        # Recibe eventos de ratón — hitTest_ en JarvisView filtra qué zona captura
-        self.win.setIgnoresMouseEvents_(False)
+        # Click-through total por defecto; view.py lo desactiva cerca del orb
+        self.win.setIgnoresMouseEvents_(True)
         self.win.setAcceptsMouseMovedEvents_(True)
 
         # Visible en todos los Spaces sin animación al cambiar
@@ -47,6 +47,9 @@ class JarvisWindow:
 
         self.win.setContentView_(view)
         self.win.makeKeyAndOrderFront_(None)
+
+        # Pasar referencia de NSWindow a la view para el toggle de proximidad
+        view.set_window(self.win)
 
     @property
     def screen_frame(self) -> AppKit.NSRect:

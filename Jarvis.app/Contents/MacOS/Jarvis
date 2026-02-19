@@ -1,0 +1,16 @@
+#!/bin/bash
+# Lanzador de Jarvis Desktop
+# Este script es el ejecutable del .app bundle.
+
+# Evitar múltiples instancias
+if pgrep -f "jarvis --desktop" > /dev/null 2>&1; then
+    osascript -e 'display notification "Jarvis ya está ejecutándose." with title "Jarvis"'
+    exit 0
+fi
+
+AGENT_DIR="/Users/luichi/Documents/Jarvis/jarvis-agent"
+PYTHON="$AGENT_DIR/.venv/bin/python"
+
+exec arch -arm64 env \
+    PYTHONPATH="$AGENT_DIR/src" \
+    "$PYTHON" -m jarvis --desktop
