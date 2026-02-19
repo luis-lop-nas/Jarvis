@@ -145,12 +145,14 @@ def _run_desktop(settings, paths) -> None:
     import objc
     import AppKit
 
-    from jarvis.overlay.window    import JarvisWindow
-    from jarvis.overlay.view      import JarvisView
-    from jarvis.overlay.bridge    import OverlayBridge
-    from jarvis.overlay.particles import ParticleSystem
-    from jarvis.overlay.daemon    import JarvisDaemon
-    from jarvis.overlay.menubar   import MenuBar
+    from jarvis.overlay.window     import JarvisWindow
+    from jarvis.overlay.view       import JarvisView
+    from jarvis.overlay.bridge     import OverlayBridge
+    from jarvis.overlay.particles  import ParticleSystem
+    from jarvis.overlay.daemon     import JarvisDaemon
+    from jarvis.overlay.menubar    import MenuBar
+    from jarvis.overlay.chat_panel import ChatPanel
+    from jarvis.overlay.main_panel import MainPanel
 
     signal.signal(
         signal.SIGINT,
@@ -158,31 +160,15 @@ def _run_desktop(settings, paths) -> None:
     )
 
     app = AppKit.NSApplication.sharedApplication()
-    # Sin icono en el Dock — Jarvis vive en la barra de menú
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
-
-    # ── App delegate: doble-clic en Jarvis.app → apagar ──────────────────────
-    class _AppDelegate(AppKit.NSObject):
-        """
-        Gestiona el ciclo de vida de la app.
-        applicationShouldHandleReopen se dispara cuando el usuario hace
-        doble clic en Jarvis.app mientras ya está corriendo → apagar.
-        """
-        def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
-            print("🔄 Doble clic detectado — apagando Jarvis...")
-            AppKit.NSApplication.sharedApplication().terminate_(None)
-            return False
-
-    _delegate = _AppDelegate.alloc().init()
-    app.setDelegate_(_delegate)
 
     screen = AppKit.NSScreen.mainScreen()
     frame  = screen.frame()
     sw, sh = frame.size.width, frame.size.height
 
-    # ── Overlay visual ───────────────────────────────────────────────────────
+    # ── Overlay visual ────────────────────────────────────────────────────────
     view      = JarvisView.alloc().initWithFrame_(frame)
-    _window   = JarvisWindow(view)          # retener referencia
+    _window   = JarvisWindow(view)
 
     particles = ParticleSystem(view)
     view.attach_particles(particles)
@@ -190,23 +176,50 @@ def _run_desktop(settings, paths) -> None:
     bridge = OverlayBridge()
     bridge.attach(view, particles)
 
-    # ── Daemon (voz + LLM + tools) ───────────────────────────────────────────
+    # ── Daemon (voz + LLM + tools) ────────────────────────────────────────────
     daemon = JarvisDaemon(bridge, sw, sh, settings, paths)
     daemon.start()
 
-    # ── Barra de menú ────────────────────────────────────────────────────────
-    _menubar = MenuBar(daemon)              # retener referencia
+    # ── Barra de menú ─────────────────────────────────────────────────────────
+    _menubar = MenuBar(daemon)
 
-    # ── Panel de chat ─────────────────────────────────────────────────────────
-    from jarvis.overlay.chat_panel import ChatPanel
-    _chat_panel = ChatPanel(bridge, daemon)  # retener referencia
+    # ── Panel de chat ──────────────────────────────────────────────────────────
+    _chat_panel = ChatPanel(bridge, daemon)
     daemon.set_chat_panel(_chat_panel)
+
+    # ── Panel principal (liquid glass) ────────────────────────────────────────
+    _main_panel = MainPanel(bridge, daemon, _chat_panel)
+
+    # Clic en el orb → toggle del panel
+    view.set_orb_click_handler(
+        lambda ox, oy, screen_h: _main_panel.toggle_near_on_main(ox, oy, screen_h)
+    )
+
+    # ── App delegate — definido DESPUÉS de todos los componentes ──────────────
+    # Así los métodos acceden a _main_panel, view y sh por closure correctamente.
+    class _AppDelegate(AppKit.NSObject):
+
+        def applicationDidFinishLaunching_(self, notification) -> None:
+            """Mostrar el panel automáticamente nada más arrancar la app."""
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.6, self, "showPanel:", None, False
+            )
+
+        def showPanel_(self, _timer) -> None:
+            _main_panel.toggle_near_on_main(view._orb_x, view._orb_y, sh)
+
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
+            """Clic en el acceso directo con la app ya corriendo → toggle del panel."""
+            _main_panel.toggle_near_on_main(view._orb_x, view._orb_y, sh)
+            return False
+
+    _delegate = _AppDelegate.alloc().init()
+    app.setDelegate_(_delegate)
 
     print("\n🔵 Jarvis Desktop activo.")
     print(f"   Pantalla: {int(sw)}×{int(sh)}")
     print("   Di «Hey Jarvis» o pulsa Ctrl+Space para hablar.")
-    print("   Icono ◉ J → Abrir Chat para modo texto.")
-    print("   Doble clic en Jarvis.app para activar/desactivar.\n")
+    print("   Haz clic en el orb o en el acceso directo para abrir el panel.\n")
 
     # NSApplication runloop — bloquea hasta Cmd+Q / Salir
     app.run()

@@ -40,12 +40,61 @@ from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
 
 
+# ── Limpieza de texto para TTS ────────────────────────────────────────────────
+
+# Patrones que NO deben pronunciarse
+_RE_FUNC_TAG    = re.compile(r'<function[^>]*>.*?</function\s*>', re.DOTALL)
+_RE_FUNC_SELF   = re.compile(r'<function[^/]*/>', re.DOTALL)
+_RE_CODE_BLOCK  = re.compile(r'```[\s\S]*?```')
+_RE_INLINE_CODE = re.compile(r'`[^`]+`')
+_RE_MARKDOWN_HD = re.compile(r'#+\s+')
+_RE_BOLD_ITAL   = re.compile(r'[*_]{1,3}([^*_]+)[*_]{1,3}')
+_RE_BULLET      = re.compile(r'^\s*[-*•]\s+', re.MULTILINE)
+_RE_NUMBERED    = re.compile(r'^\s*\d+\.\s+', re.MULTILINE)
+_RE_BRACKET_ANN = re.compile(r'\[\s*(?:usa|ejecuta|herramienta|tool|function|Sistema)[^\]]*\]', re.IGNORECASE)
+_RE_NEWLINES    = re.compile(r'\n+')       # cualquier salto de línea → espacio
+_RE_MULTI_SP    = re.compile(r' {2,}')    # espacios múltiples → uno
+
+# Frases de "estado" que el modelo dice antes de ejecutar herramientas.
+# No deben pronunciarse: suenan como narración de comandos.
+_RE_STATUS_PHRASE = re.compile(
+    r'(?:^|\.\s*)(?:(?:Enseguida|Procesando|En marcha|Buscando|Ejecutando|Consultando|'
+    r'Implementando|De inmediato|Por supuesto|Como ordene|Ciertamente|'
+    r'Muy bien|Entendido)[,.]?\s*(?:señor[.,…]?)?\s*[.…]*\s*)',
+    re.IGNORECASE,
+)
+
+
+def _clean_for_speech(text: str) -> str:
+    """
+    Limpia el texto para TTS:
+    - Elimina bloques de código, markdown, tags <function=...>
+    - Elimina frases de estado ("Enseguida, señor. Buscando...")
+    - Convierte listas en frases seguidas
+    - Colapsa saltos de línea y espacios extra
+    """
+    t = text
+    t = _RE_FUNC_TAG.sub('', t)
+    t = _RE_FUNC_SELF.sub('', t)
+    t = _RE_CODE_BLOCK.sub('', t)
+    t = _RE_INLINE_CODE.sub('', t)
+    t = _RE_BRACKET_ANN.sub('', t)
+    t = _RE_MARKDOWN_HD.sub('', t)
+    t = _RE_BOLD_ITAL.sub(r'\1', t)
+    t = _RE_BULLET.sub('', t)
+    t = _RE_NUMBERED.sub('', t)
+    t = _RE_NEWLINES.sub(' ', t)        # colapsa todos los saltos de línea
+    t = _RE_STATUS_PHRASE.sub('', t)   # quitar "Enseguida, señor." etc.
+    t = _RE_MULTI_SP.sub(' ', t)
+    return t.strip()
+
+
 # ── Sentence splitter ─────────────────────────────────────────────────────────
 
 def _split_sentences(text: str) -> List[str]:
     """
-    Divide el texto en frases para TTS progresivo.
-    Frases cortas (<25 chars) se agrupan con la siguiente para sonar naturales.
+    Divide el texto en chunks para TTS progresivo.
+    Chunk mínimo de 120 chars → menos llamadas a API → menos huecos entre frases.
     """
     if not text:
         return []
@@ -57,7 +106,7 @@ def _split_sentences(text: str) -> List[str]:
         if not part:
             continue
         buffer = (buffer + " " + part).strip() if buffer else part
-        if len(buffer) >= 25 and re.search(r'[.!?…]$', buffer):
+        if len(buffer) >= 120 and re.search(r'[.!?…]$', buffer):
             sentences.append(buffer)
             buffer = ""
     if buffer:
@@ -181,6 +230,9 @@ class JarvisDaemon:
     _VAD_TIMEOUT_S    = 15.0
     _VAD_MAX_S        = 30.0
 
+    # Conversación continua: espera máxima por voz de seguimiento
+    _FOLLOWUP_TIMEOUT_S = 6.0
+
     # VU meter: 3000 RMS ≈ voz normal conversacional
     _VU_NORM = 3000.0
 
@@ -242,6 +294,7 @@ class JarvisDaemon:
         self._wake_listener = None
         self._wake_ok = False
         self._hotkey_listener = None
+        self._is_recording = False   # True mientras graba (suprime re-trigger de wake word)
 
         # ── Popup de texto (hotkey)
         from jarvis.overlay.text_input import TextInputPopup
@@ -262,6 +315,14 @@ class JarvisDaemon:
         Puede llamarse desde cualquier thread.
         """
         self._trigger_queue.put(("chat_text", text))
+
+    def trigger_voice_input(self) -> None:
+        """
+        Inicia grabación de voz desde el panel principal. Thread-safe.
+        Puede llamarse desde cualquier thread.
+        """
+        self._interrupt_event.set()
+        self._trigger_queue.put("voice_panel")
 
     def start(self) -> None:
         self._running = True
@@ -329,12 +390,19 @@ class JarvisDaemon:
     def _wake_word_loop(self) -> None:
         """Thread siempre activo que detecta wake word incluso mientras Jarvis habla."""
         while self._running and self._wake_listener is not None:
+            # No detectar mientras estamos grabando (evita doble-trigger)
+            if self._is_recording:
+                time.sleep(0.1)
+                continue
             try:
                 detected = self._wake_listener.wait_for_wake(timeout_sec=0.5)
                 if detected and self._running:
                     print("🎤 Wake word detectado")
                     self._interrupt_event.set()
                     self._trigger_queue.put("wake_word")
+                    # Cooldown: el modelo mantiene puntuación alta varios chunks
+                    # → esperar 2s para evitar que el mismo «Hey Jarvis» dispare dos veces
+                    time.sleep(2.0)
             except Exception as e:
                 if self._running:
                     print(f"⚠️ Wake word loop error: {e}")
@@ -342,74 +410,83 @@ class JarvisDaemon:
 
     # ── Grabación con VAD + VU meter ─────────────────────────────────────────
 
-    def _record_with_vad(self, out_path: Path) -> Optional[Path]:
+    def _record_with_vad(self, out_path: Path, wait_timeout_s: Optional[float] = None) -> Optional[Path]:
         """
         Graba audio con VAD y VU meter en tiempo real.
-        Retorna ruta del WAV o None si fue interrumpida.
+        wait_timeout_s: máx. segundos esperando a que empiece la voz (None = _VAD_TIMEOUT_S).
+        Retorna ruta del WAV o None si fue interrumpida o sin voz.
         """
+        self._is_recording = True
         sr         = self.stt.cfg.sample_rate
         chunk_sz   = int(sr * self._VAD_CHUNK_MS / 1000)
         max_chunks = int(self._VAD_MAX_S * 1000 / self._VAD_CHUNK_MS)
-        wait_chunks = int(self._VAD_TIMEOUT_S * 1000 / self._VAD_CHUNK_MS)
+        wait_s      = wait_timeout_s if wait_timeout_s is not None else self._VAD_TIMEOUT_S
+        wait_chunks = int(wait_s * 1000 / self._VAD_CHUNK_MS)
 
         frames: list[np.ndarray] = []
         voice_started = False
         silence_count = 0
         wait_count    = 0
 
-        print("🎤 Escuchando...")
-        with sd.InputStream(
-            samplerate=sr,
-            channels=self.stt.cfg.channels,
-            dtype=self.stt.cfg.dtype,
-            blocksize=chunk_sz,
-        ) as stream:
-            for _ in range(max_chunks):
-                if not self._running or self._interrupt_event.is_set():
-                    break
-
-                chunk, _ = stream.read(chunk_sz)
-                rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-
-                # VU meter: nivel normalizado al orb
-                self.bridge.set_audio_level(min(1.0, rms / self._VU_NORM))
-
-                if rms >= self._VAD_THRESHOLD:
-                    if not voice_started:
-                        print("🎙️  Voz detectada")
-                        voice_started = True
-                    silence_count = 0
-                    frames.append(chunk.copy())
-                elif voice_started:
-                    frames.append(chunk.copy())
-                    silence_count += 1
-                    if silence_count >= self._VAD_SILENCE_SEGS:
-                        print("🔇 Silencio — fin de voz")
-                        break
-                else:
-                    wait_count += 1
-                    if wait_count >= wait_chunks:
+        try:
+            print("🎤 Escuchando...")
+            with sd.InputStream(
+                samplerate=sr,
+                channels=self.stt.cfg.channels,
+                dtype=self.stt.cfg.dtype,
+                blocksize=chunk_sz,
+            ) as stream:
+                for _ in range(max_chunks):
+                    if not self._running or self._interrupt_event.is_set():
                         break
 
-        self.bridge.set_audio_level(0.0)
+                    chunk, _ = stream.read(chunk_sz)
+                    rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
-        if self._interrupt_event.is_set():
-            print("🛑 Grabación interrumpida")
-            return None
+                    # VU meter: nivel normalizado al orb
+                    self.bridge.set_audio_level(min(1.0, rms / self._VU_NORM))
 
-        if not voice_started or not frames:
-            print("⚠️ Sin voz detectada, grabando 5s fijos...")
-            return self.stt.record_to_wav(out_path, seconds=5.0)
+                    if rms >= self._VAD_THRESHOLD:
+                        if not voice_started:
+                            print("🎙️  Voz detectada")
+                            voice_started = True
+                        silence_count = 0
+                        frames.append(chunk.copy())
+                    elif voice_started:
+                        frames.append(chunk.copy())
+                        silence_count += 1
+                        if silence_count >= self._VAD_SILENCE_SEGS:
+                            print("🔇 Silencio — fin de voz")
+                            break
+                    else:
+                        wait_count += 1
+                        if wait_count >= wait_chunks:
+                            break
 
-        audio = np.concatenate(frames, axis=0)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(out_path), "wb") as wf:
-            wf.setnchannels(self.stt.cfg.channels)
-            wf.setsampwidth(2)
-            wf.setframerate(sr)
-            wf.writeframes(audio.tobytes())
+            self.bridge.set_audio_level(0.0)
 
-        return out_path
+            if self._interrupt_event.is_set():
+                print("🛑 Grabación interrumpida")
+                return None
+
+            if not voice_started or not frames:
+                if wait_timeout_s is not None:
+                    # En modo follow-up, silencio = usuario no quiso hablar → no grabar
+                    return None
+                print("⚠️ Sin voz detectada, grabando 5s fijos...")
+                return self.stt.record_to_wav(out_path, seconds=5.0)
+
+            audio = np.concatenate(frames, axis=0)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(out_path), "wb") as wf:
+                wf.setnchannels(self.stt.cfg.channels)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(audio.tobytes())
+
+            return out_path
+        finally:
+            self._is_recording = False
 
     # ── Context injection ─────────────────────────────────────────────────────
 
@@ -476,7 +553,7 @@ class JarvisDaemon:
             self.bridge.set_state("idle")
             return
 
-        self._process_text(text)
+        self._process_text(text, _allow_followup=True)
 
     def _handle_hotkey_request(self) -> None:
         """Hotkey: muestra popup de texto y procesa la entrada."""
@@ -492,7 +569,7 @@ class JarvisDaemon:
             return
 
         print(f"⌨️  Escrito: «{text}»")
-        self._process_text(text)
+        self._process_text(text, _allow_followup=True)
 
     def _handle_chat_text(self, text: str) -> None:
         """Chat panel: procesa texto enviado directamente (sin grabación)."""
@@ -501,12 +578,51 @@ class JarvisDaemon:
         # El mensaje de usuario ya fue añadido al panel por _submit_text
         self._process_text(text, from_chat_panel=True)
 
-    def _process_text(self, text: str, from_chat_panel: bool = False) -> None:
+    def _try_followup(self) -> None:
+        """
+        Ventana de seguimiento: tras responder, escucha hasta _FOLLOWUP_TIMEOUT_S
+        sin requerir wake word. Si el usuario habla → nuevo turno de conversación.
+        Si no → vuelve a idle silenciosamente.
+        """
+        if not self._running or self._interrupt_event.is_set():
+            return
+
+        print(f"👂 Esperando seguimiento ({self._FOLLOWUP_TIMEOUT_S:.0f}s)...")
+        self.bridge.set_state("listening")
+
+        audio_path = self._record_with_vad(
+            self._wav_path, wait_timeout_s=self._FOLLOWUP_TIMEOUT_S
+        )
+
+        if audio_path is None or self._interrupt_event.is_set():
+            self.bridge.set_state("idle")
+            return
+
+        self.bridge.set_state("thinking")
+        try:
+            text = self.stt.transcribe_wav(audio_path)
+        except Exception as e:
+            print(f"⚠️ STT error en follow-up: {e}")
+            self.bridge.set_state("idle")
+            return
+
+        if not text or "no he detectado" in text.lower():
+            self.bridge.set_state("idle")
+            return
+
+        print(f"👂 Follow-up: «{text}»")
+        # El mensaje de usuario va al chat panel desde aquí para no duplicarlo
+        if self._chat_panel is not None:
+            self._chat_panel.add_user_message(text)
+        self._process_text(text, from_chat_panel=True, _allow_followup=True)
+
+    def _process_text(self, text: str, from_chat_panel: bool = False, _allow_followup: bool = False) -> None:
         """
         Envía texto al LLM con contexto automático y reproduce frase a frase.
         Muestra el texto completo en el HUD mientras el TTS habla.
 
         from_chat_panel=True → el mensaje usuario ya está en el panel; no duplicar.
+        _allow_followup=True → tras responder, escucha brevemente por seguimiento.
         """
         if self._interrupt_event.is_set():
             return
@@ -537,17 +653,18 @@ class JarvisDaemon:
             if self._chat_panel is not None:
                 self._chat_panel.add_jarvis_message(response)
 
-            # ── Mostrar respuesta completa en el HUD
+            # ── Mostrar respuesta completa en el HUD (texto original, con formato)
             self._hud.show_text(response)
 
-            # ── Hablar frase a frase (permite interrupciones entre frases)
-            sentences = _split_sentences(response)
-            for sentence in sentences:
-                if self._interrupt_event.is_set():
-                    break
+            # ── Limpiar para TTS: sin markdown, sin <function=...>, sin anotaciones
+            speech_text = _clean_for_speech(response)
+            if not speech_text:
+                self.bridge.set_state("idle")
+                return
 
-                self.tts.speak_nonblocking(sentence)
-
+            # ── Hablar respuesta completa de una vez → sin pausas entre frases
+            if not self._interrupt_event.is_set():
+                self.tts.speak_nonblocking(speech_text)
                 while self.tts.is_speaking:
                     if self._interrupt_event.is_set():
                         self.tts.stop()
@@ -565,6 +682,10 @@ class JarvisDaemon:
                 self._hud.hide()
             else:
                 self._hud.schedule_hide()
+
+        # Ventana de seguimiento (fuera del finally para no bloquear el idle)
+        if _allow_followup and not self._interrupt_event.is_set():
+            self._try_followup()
 
     # ── Accesibilidad ─────────────────────────────────────────────────────────
 
@@ -585,8 +706,8 @@ class JarvisDaemon:
         try:
             from jarvis.voice.wake_word import WakeWordConfig, WakeWordListener
             s = self._settings
-            # Sensibilidad baja (0.15) para detectar independientemente del acento
-            sensitivity = 0.15
+            # 0.1: muy sensible, detecta fácilmente
+            sensitivity = 0.1
             cfg = WakeWordConfig(
                 engine=getattr(s, "wake_word_engine", "openwakeword"),
                 oww_model=getattr(s, "wake_word_model", "hey_jarvis"),

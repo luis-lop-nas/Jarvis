@@ -9,13 +9,15 @@ Text-to-Speech con múltiples engines:
 
 from __future__ import annotations
 
+import queue as _queue_mod
 import shlex
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -211,6 +213,126 @@ class TTS:
         """True si el TTS está reproduciendo audio."""
         t = self._speech_thread
         return t is not None and t.is_alive()
+
+    # ── Prefetch + reproducción encadenada ───────────────────────────────────
+
+    def _fetch_elevenlabs_audio(self, text: str) -> Optional[str]:
+        """
+        Descarga audio ElevenLabs a un archivo temporal.
+        Retorna la ruta del MP3 o None si falla / fue interrumpido.
+        """
+        try:
+            from elevenlabs.types import VoiceSettings
+            from elevenlabs.client import ElevenLabs
+
+            client = ElevenLabs(api_key=self.cfg.elevenlabs_api_key)
+            audio_iter = client.text_to_speech.convert(
+                voice_id=self.cfg.elevenlabs_voice_id,
+                text=text,
+                model_id=self.cfg.elevenlabs_model,
+                output_format="mp3_44100_128",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    use_speaker_boost=True,
+                ),
+            )
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                mp3_path = f.name
+                for chunk in audio_iter:
+                    if self._stop_event.is_set():
+                        Path(mp3_path).unlink(missing_ok=True)
+                        return None
+                    f.write(chunk)
+            return mp3_path
+        except Exception as e:
+            print(f"⚠️ ElevenLabs prefetch error: {e}")
+            return None
+
+    def speak_all(
+        self,
+        sentences: List[str],
+        *,
+        interrupt_event: Optional[threading.Event] = None,
+    ) -> None:
+        """
+        Habla una lista de frases minimizando los huecos entre ellas.
+        Para ElevenLabs: pre-descarga la siguiente frase mientras reproduce la actual.
+        Para otros motores: habla secuencialmente.
+        Respeta _stop_event y el interrupt_event externo.
+        """
+        if not sentences:
+            return
+
+        def _interrupted() -> bool:
+            if self._stop_event.is_set():
+                return True
+            if interrupt_event is not None and interrupt_event.is_set():
+                return True
+            return False
+
+        if self.cfg.engine != "elevenlabs":
+            for s in sentences:
+                if _interrupted():
+                    return
+                self._stop_event.clear()
+                self.speak(s)
+            return
+
+        # ── ElevenLabs: prefetch encadenado ──────────────────────────────────
+
+        def _fetch_async(text: str, result_q: _queue_mod.Queue) -> None:
+            result_q.put(self._fetch_elevenlabs_audio(text))
+
+        # Arrancar descarga del primer chunk inmediatamente
+        current_q: _queue_mod.Queue = _queue_mod.Queue(maxsize=1)
+        threading.Thread(
+            target=_fetch_async, args=(sentences[0], current_q), daemon=True
+        ).start()
+
+        for i, _sentence in enumerate(sentences):
+            if _interrupted():
+                return
+
+            # Arrancar descarga del siguiente chunk antes de que acabe el actual
+            next_q: Optional[_queue_mod.Queue] = None
+            if i + 1 < len(sentences) and not _interrupted():
+                next_q = _queue_mod.Queue(maxsize=1)
+                threading.Thread(
+                    target=_fetch_async, args=(sentences[i + 1], next_q), daemon=True
+                ).start()
+
+            # Esperar a que el audio del chunk actual esté listo
+            audio_path: Optional[str] = current_q.get()
+
+            if audio_path is None or _interrupted():
+                current_q = next_q  # type: ignore[assignment]
+                continue
+
+            # Reproducir con afplay
+            self._stop_event.clear()
+            proc = subprocess.Popen(
+                ["afplay", audio_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._current_proc = proc
+
+            while proc.poll() is None:
+                if _interrupted():
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+                time.sleep(0.05)
+
+            self._current_proc = None
+            Path(audio_path).unlink(missing_ok=True)
+
+            # Avanzar a la cola del siguiente chunk
+            current_q = next_q  # type: ignore[assignment]
 
     def _speak_macos(self, text: str) -> dict:
         """Fallback a macOS 'say'."""

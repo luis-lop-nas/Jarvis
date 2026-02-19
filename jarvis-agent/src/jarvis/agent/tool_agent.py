@@ -498,9 +498,35 @@ class ToolAgent:
             choice = response.choices[0]
             msg_out = choice.message
 
-            # Respuesta final (sin tool calls)
+            # Respuesta final (sin tool calls estructurados)
             if not msg_out.tool_calls:
                 text = (msg_out.content or "").strip() or "No generé respuesta."
+                # Detectar tool calls en formato texto (<function=...>) que el modelo
+                # a veces genera en vez de usar el mecanismo estructurado de la API
+                text_calls = self._extract_text_tool_calls(text)
+                if text_calls:
+                    # Ejecutar las tools y pedir al modelo que reformule con los resultados
+                    tool_results_ctx = self._run_text_tool_calls(text_calls)
+                    messages.append({"role": "assistant", "content": text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Resultados de las herramientas:\n{tool_results_ctx}\n\n"
+                            "Ahora responde al usuario usando esos resultados. "
+                            "No incluyas etiquetas <function=...> en tu respuesta."
+                        ),
+                    })
+                    # Nueva llamada para que el modelo formule la respuesta final
+                    try:
+                        resp2 = self.groq_client.chat.completions.create(
+                            model=self.config.groq_model,
+                            messages=messages,
+                            max_tokens=2000,
+                            temperature=0.7,
+                        )
+                        text = (resp2.choices[0].message.content or "").strip() or text
+                    except Exception:
+                        pass  # usar texto original si falla
                 self.state.add_assistant(text)
                 self._save_message("assistant", text)
                 return text
@@ -650,6 +676,50 @@ class ToolAgent:
         self.state.add_assistant(msg)
         self._save_message("assistant", msg)
         return msg
+
+    # ------------------------------------------------------------------
+    # Punto de entrada principal
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Parser de text-format tool calls (Groq/llama fallback)
+    # ------------------------------------------------------------------
+
+    _RE_TEXT_FUNC = re.compile(
+        r'<function=(\w+)>(.*?)</function>', re.DOTALL
+    )
+
+    def _extract_text_tool_calls(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Detecta tool calls escritas en texto por el modelo
+        (<function=name>{...}</function>) y devuelve lista de {name, args}.
+        """
+        results = []
+        for m in self._RE_TEXT_FUNC.finditer(text):
+            name = m.group(1)
+            raw = m.group(2).strip()
+            try:
+                args = json.loads(raw)
+            except Exception:
+                args = {}
+            results.append({"name": name, "args": args})
+        return results
+
+    def _run_text_tool_calls(self, calls: List[Dict[str, Any]]) -> str:
+        """Ejecuta una lista de text-format tool calls y devuelve resultados como texto."""
+        parts: List[str] = []
+        for call in calls:
+            name = call["name"]
+            args = call["args"]
+            if self.config.debug:
+                print(f"🔧 Groq text-call: {name}({json.dumps(args, ensure_ascii=False)[:80]})")
+            try:
+                out = self.registry.call(name, args)
+                self._save_tool_event(name, args, out)
+                parts.append(f"[{name}] {json.dumps(out, ensure_ascii=False)}")
+            except Exception as e:
+                parts.append(f"[{name}] Error: {e}")
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # Punto de entrada principal
