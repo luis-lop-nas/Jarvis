@@ -66,42 +66,62 @@ class TTS:
             return self._speak_macos(text)
 
     def _speak_elevenlabs(self, text: str) -> dict:
-        """Habla usando ElevenLabs TTS."""
+        """Habla usando ElevenLabs TTS (SDK v2.x)."""
         try:
-            from elevenlabs import VoiceSettings, play
+            from elevenlabs.types import VoiceSettings
             from elevenlabs.client import ElevenLabs
 
             client = ElevenLabs(api_key=self.cfg.elevenlabs_api_key)
 
-            # Generar audio
-            audio = client.generate(
+            # Generar audio como stream de chunks MP3
+            audio_iter = client.text_to_speech.convert(
+                voice_id=self.cfg.elevenlabs_voice_id,
                 text=text,
-                voice=self.cfg.elevenlabs_voice_id,
-                model=self.cfg.elevenlabs_model,
+                model_id=self.cfg.elevenlabs_model,
+                output_format="mp3_44100_128",
                 voice_settings=VoiceSettings(
                     stability=0.5,
                     similarity_boost=0.75,
                     style=0.0,
-                    use_speaker_boost=True
-                )
+                    use_speaker_boost=True,
+                ),
             )
 
-            # Reproducir directamente
-            play(audio)
+            # Escribir en archivo temporal y reproducir con afplay (interruptible)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                mp3_path = f.name
+                for chunk in audio_iter:
+                    if self._stop_event.is_set():
+                        break
+                    f.write(chunk)
+
+            if self._stop_event.is_set():
+                Path(mp3_path).unlink(missing_ok=True)
+                return {"command": "elevenlabs", "returncode": 0, "stdout": "stopped", "stderr": ""}
+
+            proc = subprocess.Popen(
+                ["afplay", mp3_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._current_proc = proc
+            proc.wait()
+            self._current_proc = None
+            Path(mp3_path).unlink(missing_ok=True)
 
             return {
-                "command": "elevenlabs",
-                "returncode": 0,
-                "stdout": "Audio reproducido con ElevenLabs",
+                "command": "elevenlabs → afplay",
+                "returncode": proc.returncode,
+                "stdout": "",
                 "stderr": "",
             }
 
         except ImportError:
             print("⚠️ elevenlabs no instalado. Instala con: pip install elevenlabs")
-            return self._speak_piper(text)
+            return self._speak_macos(text)
         except Exception as e:
             print(f"⚠️ Error ElevenLabs: {e}. Usando fallback...")
-            return self._speak_piper(text)
+            return self._speak_macos(text)
 
     def _speak_piper(self, text: str) -> dict:
         """Habla usando Piper TTS."""

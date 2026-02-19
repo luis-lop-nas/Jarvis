@@ -142,6 +142,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 def _run_desktop(settings, paths) -> None:
     """Arranca Jarvis en modo escritorio: overlay NSWindow + daemon voz/LLM."""
     import signal
+    import objc
     import AppKit
 
     from jarvis.overlay.window    import JarvisWindow
@@ -159,6 +160,21 @@ def _run_desktop(settings, paths) -> None:
     app = AppKit.NSApplication.sharedApplication()
     # Sin icono en el Dock — Jarvis vive en la barra de menú
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+    # ── App delegate: doble-clic en Jarvis.app → apagar ──────────────────────
+    class _AppDelegate(AppKit.NSObject):
+        """
+        Gestiona el ciclo de vida de la app.
+        applicationShouldHandleReopen se dispara cuando el usuario hace
+        doble clic en Jarvis.app mientras ya está corriendo → apagar.
+        """
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
+            print("🔄 Doble clic detectado — apagando Jarvis...")
+            AppKit.NSApplication.sharedApplication().terminate_(None)
+            return False
+
+    _delegate = _AppDelegate.alloc().init()
+    app.setDelegate_(_delegate)
 
     screen = AppKit.NSScreen.mainScreen()
     frame  = screen.frame()
@@ -181,10 +197,16 @@ def _run_desktop(settings, paths) -> None:
     # ── Barra de menú ────────────────────────────────────────────────────────
     _menubar = MenuBar(daemon)              # retener referencia
 
+    # ── Panel de chat ─────────────────────────────────────────────────────────
+    from jarvis.overlay.chat_panel import ChatPanel
+    _chat_panel = ChatPanel(bridge, daemon)  # retener referencia
+    daemon.set_chat_panel(_chat_panel)
+
     print("\n🔵 Jarvis Desktop activo.")
     print(f"   Pantalla: {int(sw)}×{int(sh)}")
     print("   Di «Hey Jarvis» o pulsa Ctrl+Space para hablar.")
-    print("   Icono ◉ J en la barra de menú para controlar.\n")
+    print("   Icono ◉ J → Abrir Chat para modo texto.")
+    print("   Doble clic en Jarvis.app para activar/desactivar.\n")
 
     # NSApplication runloop — bloquea hasta Cmd+Q / Salir
     app.run()

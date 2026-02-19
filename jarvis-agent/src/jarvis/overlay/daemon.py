@@ -193,6 +193,7 @@ class JarvisDaemon:
         paths: Any,
     ) -> None:
         self.bridge = bridge
+        self._settings = settings          # guardar para wake word config
         self._running = False
         self._main_thread: Optional[threading.Thread] = None
 
@@ -246,7 +247,21 @@ class JarvisDaemon:
         from jarvis.overlay.text_input import TextInputPopup
         self._text_popup = TextInputPopup(bridge)
 
+        # ── Chat panel (se asigna desde main.py tras crear el panel)
+        self._chat_panel = None
+
     # ── Arranque / parada ─────────────────────────────────────────────────────
+
+    def set_chat_panel(self, panel) -> None:
+        """Conecta el panel de chat. Llamar antes de app.run()."""
+        self._chat_panel = panel
+
+    def submit_text(self, text: str) -> None:
+        """
+        Envía texto desde el chat panel al daemon. Thread-safe.
+        Puede llamarse desde cualquier thread.
+        """
+        self._trigger_queue.put(("chat_text", text))
 
     def start(self) -> None:
         self._running = True
@@ -304,7 +319,9 @@ class JarvisDaemon:
             time.sleep(0.05)
             self._interrupt_event.clear()
 
-            if source == "hotkey":
+            if isinstance(source, tuple) and source[0] == "chat_text":
+                self._handle_chat_text(source[1])
+            elif source == "hotkey":
                 self._handle_hotkey_request()
             else:
                 self._handle_request()
@@ -477,16 +494,29 @@ class JarvisDaemon:
         print(f"⌨️  Escrito: «{text}»")
         self._process_text(text)
 
-    def _process_text(self, text: str) -> None:
+    def _handle_chat_text(self, text: str) -> None:
+        """Chat panel: procesa texto enviado directamente (sin grabación)."""
+        self._hud.hide()
+        print(f"💬 Chat: «{text}»")
+        # El mensaje de usuario ya fue añadido al panel por _submit_text
+        self._process_text(text, from_chat_panel=True)
+
+    def _process_text(self, text: str, from_chat_panel: bool = False) -> None:
         """
         Envía texto al LLM con contexto automático y reproduce frase a frase.
         Muestra el texto completo en el HUD mientras el TTS habla.
+
+        from_chat_panel=True → el mensaje usuario ya está en el panel; no duplicar.
         """
         if self._interrupt_event.is_set():
             return
 
         try:
             self.bridge.set_state("thinking")
+
+            # ── Añadir mensaje usuario al chat panel (si viene de voz/hotkey)
+            if self._chat_panel is not None and not from_chat_panel:
+                self._chat_panel.add_user_message(text)
 
             # ── Inyectar contexto del entorno automáticamente
             context = self._get_context()
@@ -502,6 +532,10 @@ class JarvisDaemon:
 
             print(f"🤖 Jarvis: «{response}»")
             self.bridge.set_state("acting")
+
+            # ── Actualizar chat panel con la respuesta
+            if self._chat_panel is not None:
+                self._chat_panel.add_jarvis_message(response)
 
             # ── Mostrar respuesta completa en el HUD
             self._hud.show_text(response)
@@ -550,9 +584,19 @@ class JarvisDaemon:
     def _start_wake_word(self) -> bool:
         try:
             from jarvis.voice.wake_word import WakeWordConfig, WakeWordListener
-            cfg = WakeWordConfig(engine="openwakeword", oww_model="hey_jarvis", sensitivity=0.5)
+            s = self._settings
+            # Sensibilidad baja (0.15) para detectar independientemente del acento
+            sensitivity = 0.15
+            cfg = WakeWordConfig(
+                engine=getattr(s, "wake_word_engine", "openwakeword"),
+                oww_model=getattr(s, "wake_word_model", "hey_jarvis"),
+                sensitivity=sensitivity,
+                access_key=getattr(s, "porcupine_access_key", "") or "",
+                keyword=getattr(s, "wake_word", "jarvis"),
+            )
             self._wake_listener = WakeWordListener(cfg)
             self._wake_listener.start()
+            print(f"🎤 Wake word activo: '{cfg.oww_model}' (sensibilidad={sensitivity:.2f})")
             return True
         except Exception as e:
             print(f"⚠️ Wake word no disponible ({e}). Usando solo hotkey.")

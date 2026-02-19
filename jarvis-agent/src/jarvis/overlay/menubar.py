@@ -40,6 +40,11 @@ class _MenuDelegate(AppKit.NSObject):
             self._daemon.start()
             sender.setTitle_("Silenciar")
 
+    def toggleChat_(self, sender) -> None:
+        cp = getattr(self._daemon, "_chat_panel", None)
+        if cp is not None:
+            cp.toggle()
+
     def toggleAutostart_(self, sender) -> None:
         try:
             from jarvis.autostart import install, uninstall, is_installed
@@ -107,6 +112,13 @@ class MenuBar:
         )
         self._autostart_item.setTarget_(self._delegate)
         menu.addItem_(self._autostart_item)
+
+        # Chat
+        self._chat_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Abrir Chat", "toggleChat:", ""
+        )
+        self._chat_item.setTarget_(self._delegate)
+        menu.addItem_(self._chat_item)
 
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
 

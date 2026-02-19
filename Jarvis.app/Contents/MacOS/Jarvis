@@ -1,15 +1,21 @@
 #!/bin/bash
-# Lanzador de Jarvis Desktop
-# Este script es el ejecutable del .app bundle.
-
-# Evitar múltiples instancias
-if pgrep -f "jarvis --desktop" > /dev/null 2>&1; then
-    osascript -e 'display notification "Jarvis ya está ejecutándose." with title "Jarvis"'
-    exit 0
-fi
+# Lanzador de Jarvis Desktop — click para activar/desactivar
+#
+# • Si Jarvis NO está corriendo → lo arranca
+# • Si Jarvis YA está corriendo → macOS envía evento "reopen" a la app,
+#   que lo interpreta como señal de apagado (ver main.py _AppDelegate).
+#   Como fallback, si se lanza una segunda instancia, el pgrep lo mata aquí.
 
 AGENT_DIR="/Users/luichi/Documents/Jarvis/jarvis-agent"
 PYTHON="$AGENT_DIR/.venv/bin/python"
+
+# Fallback toggle: matar si ya hay una instancia corriendo
+# (normalmente macOS intercepta antes y no llega aquí)
+if pgrep -qf "\-m jarvis" 2>/dev/null; then
+    pkill -f "\-m jarvis" 2>/dev/null
+    osascript -e 'display notification "Jarvis desactivado." with title "◉ Jarvis"'
+    exit 0
+fi
 
 exec arch -arm64 env \
     PYTHONPATH="$AGENT_DIR/src" \

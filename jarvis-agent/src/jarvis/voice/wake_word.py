@@ -107,6 +107,8 @@ class OpenWakeWordListener:
             prediction = self._model.predict(audio_flat)
 
             for score in prediction.values():
+                if score >= 0.05:   # mostrar activaciones notables para debug
+                    print(f"  [wake] score={score:.3f} (umbral={self.cfg.sensitivity:.2f})")
                 if score >= self.cfg.sensitivity:
                     return True
 

@@ -1,16 +1,16 @@
 """
 view.py
 
-NSView personalizado que dibuja el orb de Jarvis y sus animaciones.
+Plasma Energy Sphere — orb animado de Jarvis.
 
-Coordenadas macOS: (0,0) = esquina inferior-izquierda de la pantalla.
-El orb vive en la esquina inferior-izquierda por defecto.
+La esfera simula un cuerpo oscuro con borde luminoso y tendrils de plasma
+(arcos eléctricos) que emergen de la superficie y pulsan según el estado.
 
-Estados del orb:
-  idle      → azul, pulso suave
-  listening → verde, pulso rápido
-  thinking  → naranja, oscilación
-  acting    → azul eléctrico, intenso
+Estados:
+  idle      → azul profundo,    10 tendrils, lentos
+  listening → verde eléctrico,  14 tendrils, activos
+  thinking  → naranja,          12 tendrils, oscilantes
+  acting    → azul brillante,   20 tendrils + audio-reactivos
 """
 
 from __future__ import annotations
@@ -20,229 +20,279 @@ import objc
 import AppKit
 
 
-# Paleta
+# ── Paleta por estado ─────────────────────────────────────────────────────────
+
 _COLORS = {
-    "idle":      (0.00, 0.71, 1.00),   # azul eléctrico
-    "listening": (0.00, 0.95, 0.50),   # verde
-    "thinking":  (1.00, 0.60, 0.00),   # naranja
-    "acting":    (0.00, 0.85, 1.00),   # azul brillante
+    "idle":      (0.15, 0.45, 1.00),
+    "listening": (0.00, 0.92, 0.45),
+    "thinking":  (1.00, 0.55, 0.05),
+    "acting":    (0.25, 0.65, 1.00),
 }
 
+# Número de tendrils (arcos eléctricos) por estado
+_N_TENDRILS = {
+    "idle":      10,
+    "listening": 14,
+    "thinking":  12,
+    "acting":    20,
+}
+
+# Velocidad de fase angular (rad/frame a 30fps × 4 → rad unitario)
+_ROT_SPEED = {
+    "idle":      0.007,
+    "listening": 0.018,
+    "thinking":  0.022,
+    "acting":    0.030,
+}
+
+ORB_RADIUS  = 38.0   # radio base de la esfera en px
+_HIT_RADIUS = 62.0   # zona interactiva (drag + click-through toggle)
+
+
+# ── Vista principal ───────────────────────────────────────────────────────────
 
 class JarvisView(AppKit.NSView):
-    """Vista transparente que renderiza el orb a ~30 fps."""
+    """Renderiza el plasma orb a 30 fps."""
 
     # ------------------------------------------------------------------ init
 
-    def initWithFrame_(self, frame: AppKit.NSRect) -> "JarvisView":
+    def initWithFrame_(self, frame):
         self = objc.super(JarvisView, self).initWithFrame_(frame)
         if self is None:
             return None
 
-        # Posición del orb en coordenadas de pantalla
-        self._orb_x: float = 68.0
-        self._orb_y: float = 68.0   # 68 px desde abajo-izquierda
+        self._orb_x: float = 80.0
+        self._orb_y: float = 80.0
+        self._state: str   = "idle"
+        self._phase: float = 0.0          # fase global de animación
+        self._audio_level: float = 0.0    # 0-1, nivel de audio (VU meter)
+        self._particles = None
 
-        self._state: str  = "idle"
-        self._pulse: float = 0.0    # fase del seno para la animación
-        self._particles = None      # ParticleSystem opcional
+        # Drag
+        self._dragging         = False
+        self._drag_mouse_start = (0.0, 0.0)
+        self._drag_orb_start   = (0.0, 0.0)
 
-        # Estado de drag
-        self._dragging:          bool  = False
-        self._drag_mouse_start:  tuple = (0.0, 0.0)
-        self._drag_orb_start:    tuple = (0.0, 0.0)
+        self._window = None   # referencia al NSWindow para click-through
 
-        # Ángulo de rotación de los anillos orbitales (thinking/acting)
-        self._orbit_angle: float = 0.0
-
-        # Nivel de audio para VU meter (0.0 = silencio, 1.0 = máximo)
-        self._audio_level: float = 0.0
-
-        # Referencia a NSWindow para toggle de click-through
-        self._window = None
-
-        # Timer a 30 fps — llama a tick_ en cada frame
+        # Timer 30 fps
         self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1 / 30.0, self, "tick:", None, True
         )
-
         return self
 
     # ----------------------------------------------------------------- flags
 
-    def isOpaque(self) -> bool:
-        return False   # imprescindible para transparencia
+    def isOpaque(self):          return False
+    def acceptsFirstResponder(self): return True
 
-    def acceptsFirstResponder(self) -> bool:
-        return True    # necesario para recibir eventos de ratón
+    # ──────────────────────────────────────────── hit-test y drag del orb ──
 
-    # ────────────────────────────────────────────── hit-test y drag del orb ──
-
-    _HIT_RADIUS = 45.0   # px — zona interactiva alrededor del orb (cubre el halo exterior)
-
-    def hitTest_(self, point: AppKit.NSPoint):
-        """Solo captura el evento si el punto está dentro del radio del orb."""
+    def hitTest_(self, point):
         dx = point.x - self._orb_x
         dy = point.y - self._orb_y
-        if dx * dx + dy * dy <= self._HIT_RADIUS ** 2:
-            return self
-        return None   # click-through al resto de apps
+        return self if dx * dx + dy * dy <= _HIT_RADIUS ** 2 else None
 
-    def mouseDown_(self, event: AppKit.NSEvent) -> None:
+    def mouseDown_(self, event):
         loc = event.locationInWindow()
-        self._dragging = True
+        self._dragging         = True
         self._drag_mouse_start = (loc.x, loc.y)
         self._drag_orb_start   = (self._orb_x, self._orb_y)
 
-    def mouseDragged_(self, event: AppKit.NSEvent) -> None:
+    def mouseDragged_(self, event):
         if not self._dragging:
             return
         loc = event.locationInWindow()
         dx  = loc.x - self._drag_mouse_start[0]
         dy  = loc.y - self._drag_mouse_start[1]
+        f   = self.frame()
+        m   = _HIT_RADIUS
+        self._orb_x = max(m, min(f.size.width  - m, self._drag_orb_start[0] + dx))
+        self._orb_y = max(m, min(f.size.height - m, self._drag_orb_start[1] + dy))
 
-        frame  = self.frame()
-        margin = self._HIT_RADIUS
-        new_x  = max(margin, min(frame.size.width  - margin, self._drag_orb_start[0] + dx))
-        new_y  = max(margin, min(frame.size.height - margin, self._drag_orb_start[1] + dy))
-
-        self._orb_x = new_x
-        self._orb_y = new_y
-
-    def mouseUp_(self, event: AppKit.NSEvent) -> None:
+    def mouseUp_(self, event):
         self._dragging = False
 
-    # --------------------------------------------------------------- tick/draw
+    # ─────────────────────────────────────────────────────── tick / draw ──
 
-    def tick_(self, timer: AppKit.NSTimer) -> None:
-        """Avanza la fase de animación y pide redibujo."""
-        speed = 0.08 if self._state == "listening" else 0.04
-        self._pulse += speed
-        if self._state in ("thinking", "acting"):
-            self._orbit_angle += 0.06   # ~1.8 rad/s → vuelta completa en ~3.5s
+    def tick_(self, timer):
+        self._phase += _ROT_SPEED.get(self._state, 0.007) * 4.0
         if self._particles is not None:
             self._particles.update(1 / 30.0)
         self.setNeedsDisplay_(True)
 
-        # Toggle click-through: ignorar eventos excepto cuando el cursor está cerca del orb
+        # Toggle click-through según proximidad del cursor
         if self._window is not None:
-            loc = AppKit.NSEvent.mouseLocation()
-            dx = loc.x - self._orb_x
-            dy = loc.y - self._orb_y
-            near = (dx * dx + dy * dy) <= (self._HIT_RADIUS + 8.0) ** 2
+            loc  = AppKit.NSEvent.mouseLocation()
+            dx   = loc.x - self._orb_x
+            dy   = loc.y - self._orb_y
+            near = dx * dx + dy * dy <= (_HIT_RADIUS + 8.0) ** 2
             self._window.setIgnoresMouseEvents_(not near)
 
-    def drawRect_(self, dirty_rect: AppKit.NSRect) -> None:
-        """Dibuja el orb con sus halos de glow. Llamado en cada frame."""
-        pulse = math.sin(self._pulse)          # -1 → 1
-        norm  = pulse * 0.3 + 0.7             #  0.4 → 1.0  (siempre positivo)
-
+    def drawRect_(self, dirty_rect):
         r, g, b = _COLORS.get(self._state, _COLORS["idle"])
         ox, oy  = self._orb_x, self._orb_y
+        ph      = self._phase
+        al      = self._audio_level
 
-        # ── Halos concéntricos (glow exterior) ──────────────────────────────
-        for i, (radius, base_alpha) in enumerate([(55, 0.04), (42, 0.07), (30, 0.11)]):
-            alpha = base_alpha * norm
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, alpha).set()
-            AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                AppKit.NSMakeRect(ox - radius, oy - radius, radius * 2, radius * 2)
-            ).fill()
+        # Radio animado (audio-reactivo al hablar)
+        orb_r = ORB_RADIUS + (10.0 * al if self._state == "acting" else 0.0)
 
-        # ── Orb principal ────────────────────────────────────────────────────
-        orb_r = 15.0
-        # VU meter: expande el orb hasta +9px según el nivel de audio (mic/TTS)
-        if self._state in ("listening", "acting"):
-            orb_r += 9.0 * self._audio_level
-        alpha = 0.50 + 0.40 * norm
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, alpha).set()
-        AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-            AppKit.NSMakeRect(ox - orb_r, oy - orb_r, orb_r * 2, orb_r * 2)
-        ).fill()
+        # Orden de dibujo:
+        # 1. Halo exterior difuso
+        # 2. Tendrils (debajo del cuerpo → la esfera tapa los segmentos interiores)
+        # 3. Cuerpo de la esfera
+        # 4. Partículas fly_to
 
-        # ── Núcleo blanco ────────────────────────────────────────────────────
-        core_r = 5.0
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(1, 1, 1, 0.55 * norm).set()
-        AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-            AppKit.NSMakeRect(ox - core_r, oy - core_r, core_r * 2, core_r * 2)
-        ).fill()
+        self._draw_glow(ox, oy, r, g, b, orb_r, ph)
+        self._draw_tendrils(ox, oy, r, g, b, orb_r, ph, al)
+        self._draw_sphere(ox, oy, r, g, b, orb_r, ph)
 
-        # ── Anillo exterior (solo en listening/thinking) ─────────────────────
-        if self._state in ("listening", "thinking"):
-            ring_r = 22.0 + abs(pulse) * 4
-            path = AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                AppKit.NSMakeRect(ox - ring_r, oy - ring_r, ring_r * 2, ring_r * 2)
-            )
-            path.setLineWidth_(1.2)
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, 0.35 * norm).set()
-            path.stroke()
-
-        # ── Anillos orbitales (thinking / acting) ────────────────────────────
-        if self._state in ("thinking", "acting"):
-            self._draw_orbit(ox, oy, r, g, b, norm)
-
-        # ── Partículas fly_to (siempre encima) ───────────────────────────────
         if self._particles is not None:
             self._particles.draw()
 
-    # --------------------------------------------------------- orbit animation
+    # ──────────────────────────────────────────── halo exterior difuso ──
 
-    def _draw_orbit(self, ox: float, oy: float, r: float, g: float, b: float, norm: float) -> None:
-        """
-        Dos anillos de puntos que orbitan el orb en sentidos contrarios.
-        Ring 1 — 6 puntos, r=30px, sentido horario, tamaño 3px.
-        Ring 2 — 8 puntos, r=44px, anti-horario (×0.65), tamaño 2px.
-        El alpha de cada punto varía con la profundidad (efecto 3D).
-        """
-        angle = self._orbit_angle
-
-        # Anillo interior
-        for i in range(6):
-            a   = angle + (2 * math.pi * i / 6)
-            px  = ox + 30.0 * math.cos(a)
-            py  = oy + 30.0 * math.sin(a)
-            # Profundidad: puntos "delante" (sin > 0) más brillantes
-            depth = 0.45 + 0.55 * math.sin(a)
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, norm * 0.85 * depth).set()
-            s = 3.0
+    def _draw_glow(self, ox, oy, r, g, b, orb_r, ph):
+        """Tres anillos concéntricos de glow exterior."""
+        pulse = 0.75 + 0.25 * math.sin(ph * 0.7)
+        for dist, base_a in (
+            (orb_r + 52, 0.022),
+            (orb_r + 30, 0.052),
+            (orb_r + 13, 0.088),
+        ):
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, base_a * pulse).set()
             AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                AppKit.NSMakeRect(px - s, py - s, s * 2, s * 2)
+                AppKit.NSMakeRect(ox - dist, oy - dist, dist * 2, dist * 2)
             ).fill()
 
-        # Anillo exterior (contra-rotante, más lento)
-        for i in range(8):
-            a   = -angle * 0.65 + (2 * math.pi * i / 8)
-            px  = ox + 44.0 * math.cos(a)
-            py  = oy + 44.0 * math.sin(a)
-            depth = 0.35 + 0.65 * math.sin(a)
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, norm * 0.55 * depth).set()
-            s = 2.0
+    # ────────────────────────────────────── tendrils (arcos eléctricos) ──
+
+    def _draw_tendrils(self, ox, oy, r, g, b, orb_r, ph, al):
+        """
+        Dibuja n tendrils que emergen de la superficie de la esfera.
+        Cada tendril tiene 6 segmentos con desplazamiento sinusoidal multi-frecuencia.
+        Se dibujan ANTES de la esfera para que esta tape los segmentos internos.
+        """
+        n        = _N_TENDRILS.get(self._state, 10)
+        n_seg    = 6
+        # Boost de longitud cuando Jarvis habla
+        audio_boost = al * 0.9 if self._state == "acting" else 0.0
+
+        for t in range(n):
+            # Ángulo base del tendril (distribución uniforme + lenta rotación)
+            base_angle = (2 * math.pi * t / n) + ph * 0.15
+            t_off = t * 2.39996   # golden ratio para separar fases entre tendrils
+
+            # Longitud del tendril (ruido multi-frecuencia)
+            len_noise = (
+                0.50 * math.sin(ph * 1.1 + t_off)
+                + 0.30 * math.sin(ph * 2.3 + t_off * 1.7)
+                + 0.20 * math.sin(ph * 3.7 + t_off * 0.9)
+            )
+            length = orb_r * (0.55 + 0.35 * len_noise + audio_boost)
+            length = max(orb_r * 0.08, length)
+
+            # Construir los puntos del tendril
+            pts = []
+            for s in range(n_seg + 1):
+                frac = s / n_seg
+                rad  = orb_r + frac * length
+                # Desplazamiento perpendicular sinusoidal (da apariencia jagged / orgánica)
+                perp = (
+                    0.30 * math.sin(ph * 2.1 + frac * math.pi * 3 + t_off)
+                    + 0.15 * math.sin(ph * 4.3 + frac * math.pi * 5 + t_off * 1.3)
+                    + 0.08 * math.sin(ph * 7.1 + frac * math.pi * 7 + t_off * 0.7)
+                )
+                angle = base_angle + perp * (1.0 - frac * 0.5)
+                pts.append((ox + rad * math.cos(angle), oy + rad * math.sin(angle)))
+
+            base_a = 0.45 + 0.30 * abs(len_noise)
+
+            # Halo exterior difuso
+            p_halo = AppKit.NSBezierPath.bezierPath()
+            p_halo.moveToPoint_(AppKit.NSMakePoint(*pts[0]))
+            for px, py in pts[1:]:
+                p_halo.lineToPoint_(AppKit.NSMakePoint(px, py))
+            p_halo.setLineWidth_(3.2)
+            p_halo.setLineCapStyle_(AppKit.NSRoundLineCapStyle)
+            p_halo.setLineJoinStyle_(AppKit.NSRoundLineJoinStyle)
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, base_a * 0.28).set()
+            p_halo.stroke()
+
+            # Núcleo brillante
+            p_core = AppKit.NSBezierPath.bezierPath()
+            p_core.moveToPoint_(AppKit.NSMakePoint(*pts[0]))
+            for px, py in pts[1:]:
+                p_core.lineToPoint_(AppKit.NSMakePoint(px, py))
+            p_core.setLineWidth_(0.9)
+            p_core.setLineCapStyle_(AppKit.NSRoundLineCapStyle)
+            p_core.setLineJoinStyle_(AppKit.NSRoundLineJoinStyle)
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, base_a * 0.88).set()
+            p_core.stroke()
+
+            # Brillo en la punta
+            tip_x, tip_y = pts[-1]
+            tip_r = 2.0 + 1.5 * abs(len_noise)
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, base_a * 0.60).set()
             AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                AppKit.NSMakeRect(px - s, py - s, s * 2, s * 2)
+                AppKit.NSMakeRect(tip_x - tip_r, tip_y - tip_r, tip_r * 2, tip_r * 2)
             ).fill()
 
-    # ------------------------------------------------------- particle system
+    # ──────────────────────────────────────── cuerpo de la esfera ──
+
+    def _draw_sphere(self, ox, oy, r, g, b, orb_r, ph):
+        """
+        Simula una esfera oscura con borde luminoso usando 22 círculos concéntricos.
+        Se dibuja de fuera a dentro: el mayor es brillante (borde), el menor es negro (centro).
+        Cada círculo más pequeño tapa el centro del anterior → gradiente radial.
+        """
+        N = 22
+        for i in range(N - 1, -1, -1):
+            frac   = i / (N - 1)          # 0 = centro, 1 = borde
+            ring_r = orb_r * frac
+            bright = frac ** 0.6          # borde brillante, centro oscuro
+
+            cr = r * bright + 0.02 * (1.0 - frac)
+            cg = g * bright + 0.02 * (1.0 - frac)
+            cb = b * bright + 0.08 * (1.0 - frac)  # tinte azul oscuro en el centro
+
+            # Pulso sutil solo en el anillo exterior (frac > 0.88)
+            alpha = 1.0
+            if frac > 0.88:
+                alpha = 0.85 + 0.15 * math.sin(ph * 1.3)
+
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, alpha).set()
+            AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                AppKit.NSMakeRect(ox - ring_r, oy - ring_r, ring_r * 2, ring_r * 2)
+            ).fill()
+
+        # Destello especular (esquina superior-izquierda)
+        sx = ox - orb_r * 0.30
+        sy = oy + orb_r * 0.32
+        sr = orb_r * 0.20
+        sa = 0.28 + 0.08 * math.sin(ph * 0.9)
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, sa).set()
+        AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+            AppKit.NSMakeRect(sx - sr, sy - sr, sr * 2, sr * 2)
+        ).fill()
+
+    # ────────────────────────────────────────────────────── API pública ──
 
     def attach_particles(self, particles) -> None:
-        """Conectar el sistema de partículas. Llamar desde el hilo principal."""
         self._particles = particles
 
-    # ----------------------------------------------------------- state control
-
     def set_window(self, win) -> None:
-        """Referencia al NSWindow para toggle de click-through por proximidad."""
         self._window = win
 
     def set_state(self, state: str) -> None:
-        """Cambiar estado del orb. Llamar SIEMPRE desde el hilo principal."""
         self._state = state
 
     def set_position(self, x: float, y: float) -> None:
-        """Mover el orb a nuevas coordenadas de pantalla."""
         self._orb_x = x
         self._orb_y = y
 
     def set_audio_level(self, level: float) -> None:
-        """Actualizar nivel de audio para el VU meter. Llamar desde hilo principal."""
         self._audio_level = max(0.0, min(1.0, level))
 
     @property
