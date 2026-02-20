@@ -190,27 +190,18 @@ def _run_desktop(settings, paths) -> None:
     # ── Panel principal (liquid glass) ────────────────────────────────────────
     _main_panel = MainPanel(bridge, daemon, _chat_panel)
 
-    # Clic en el orb → toggle del panel
-    view.set_orb_click_handler(
-        lambda ox, oy, screen_h: _main_panel.toggle_near_on_main(ox, oy, screen_h)
-    )
+    # Conectar panel al menú de la barra de menú
+    _menubar.set_main_panel(_main_panel)
 
     # ── App delegate — definido DESPUÉS de todos los componentes ──────────────
-    # Así los métodos acceden a _main_panel, view y sh por closure correctamente.
     class _AppDelegate(AppKit.NSObject):
 
         def applicationDidFinishLaunching_(self, notification) -> None:
-            """Mostrar el panel automáticamente nada más arrancar la app."""
-            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.6, self, "showPanel:", None, False
-            )
-
-        def showPanel_(self, _timer) -> None:
-            _main_panel.toggle_near_on_main(view._orb_x, view._orb_y, sh)
+            pass  # El panel se abre solo con el acceso directo (Ctrl+Space / Dock)
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
-            """Clic en el acceso directo con la app ya corriendo → toggle del panel."""
-            _main_panel.toggle_near_on_main(view._orb_x, view._orb_y, sh)
+            """Clic en el acceso directo del escritorio → toggle del panel."""
+            _main_panel.toggle_on_main()
             return False
 
     _delegate = _AppDelegate.alloc().init()

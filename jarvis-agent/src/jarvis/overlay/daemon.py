@@ -324,6 +324,14 @@ class JarvisDaemon:
         self._interrupt_event.set()
         self._trigger_queue.put("voice_panel")
 
+    def trigger_text_input(self) -> None:
+        """
+        Abre el popup de entrada de texto. Thread-safe.
+        Puede llamarse desde cualquier thread.
+        """
+        self._interrupt_event.set()
+        self._trigger_queue.put("hotkey")
+
     def start(self) -> None:
         self._running = True
         self._main_thread = threading.Thread(
@@ -734,8 +742,13 @@ class JarvisDaemon:
                 self._interrupt_event.set()
                 self._trigger_queue.put("hotkey")
 
+            # pynput >= 1.8 añade argumento 'injected' a los callbacks.
+            # Envolver on_activate para aceptar cualquier firma.
+            def on_activate_compat(*args, **kwargs):
+                on_activate()
+
             self._hotkey_listener = keyboard.GlobalHotKeys(
-                {self.HOTKEY: on_activate}
+                {self.HOTKEY: on_activate_compat}
             )
             self._hotkey_listener.start()
             print(f"⌨️  Hotkey registrada: {self.HOTKEY}")

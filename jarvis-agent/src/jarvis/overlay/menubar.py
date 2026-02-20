@@ -27,9 +27,13 @@ class _MenuDelegate(AppKit.NSObject):
         self = objc.super(_MenuDelegate, self).init()
         if self is None:
             return None
-        self._daemon = daemon
-        self._muted  = False
+        self._daemon      = daemon
+        self._muted       = False
+        self._main_panel  = None   # se asigna con set_main_panel()
         return self
+
+    def set_main_panel(self, panel) -> None:
+        self._main_panel = panel
 
     def toggleMute_(self, sender) -> None:
         self._muted = not self._muted
@@ -39,6 +43,11 @@ class _MenuDelegate(AppKit.NSObject):
         else:
             self._daemon.start()
             sender.setTitle_("Silenciar")
+
+    def togglePanel_(self, sender) -> None:
+        mp = self._main_panel
+        if mp is not None:
+            mp.toggle_near(80.0, 80.0, 800.0)   # posición por defecto; orb suele estar ahí
 
     def toggleChat_(self, sender) -> None:
         cp = getattr(self._daemon, "_chat_panel", None)
@@ -113,6 +122,13 @@ class MenuBar:
         self._autostart_item.setTarget_(self._delegate)
         menu.addItem_(self._autostart_item)
 
+        # Panel principal
+        self._panel_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Panel", "togglePanel:", ""
+        )
+        self._panel_item.setTarget_(self._delegate)
+        menu.addItem_(self._panel_item)
+
         # Chat
         self._chat_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Abrir Chat", "toggleChat:", ""
@@ -130,3 +146,7 @@ class MenuBar:
         menu.addItem_(quit_item)
 
         self._item.setMenu_(menu)
+
+    def set_main_panel(self, panel) -> None:
+        """Conectar el panel principal al menú. Llamar desde el hilo principal."""
+        self._delegate.set_main_panel(panel)
