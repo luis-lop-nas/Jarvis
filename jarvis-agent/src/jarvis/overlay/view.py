@@ -215,6 +215,7 @@ class JarvisView(AppKit.NSView):
         r, g, b = self._s_r, self._s_g, self._s_b
         ox, oy  = self._orb_x, self._orb_y
         ph      = self._phase
+        al      = self._audio_level
 
         # Amplitud: suavizada + audio boost suavizado
         amp = self._s_amp + self._s_audio_bst
