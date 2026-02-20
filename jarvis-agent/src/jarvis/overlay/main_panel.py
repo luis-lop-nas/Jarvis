@@ -443,6 +443,7 @@ class MainPanel:
         self._panel.setBackgroundColor_(AppKit.NSColor.clearColor())
         self._panel.setHasShadow_(True)
         self._panel.setMovableByWindowBackground_(True)
+        self._panel.setHidesOnDeactivate_(False)
         self._panel.setCollectionBehavior_(
             AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
             | AppKit.NSWindowCollectionBehaviorStationary
