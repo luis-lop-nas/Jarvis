@@ -1,122 +1,287 @@
 """
-view.py
+view.py — Cloud Entity
 
-Dot Sphere — esfera 3D de puntos animada.
+Nube orgánica de 80 partículas estilo "cloud entity / glitch art".
+Reemplaza la esfera 3D con corona solar.
 
-Cuadrícula lat/lon proyectada en 3D con deformación de ondas sinusoidales.
-La esfera rota continuamente y se deforma según el estado de Jarvis:
+Paletas por estado:
+  idle      → cyan  #00ffe0 + purple #7b2fff
+  listening → green #00ff88 + cyan   #00ffe0
+  thinking  → yellow #ffe100 + orange #ff8c00
+  acting    → pink  #ff2060 + purple #8b00ff
 
-  idle      → azul, rotación lenta, deformación mínima (respiración)
-  listening → cyan-verde, deformación reactiva al audio
-  thinking  → violeta, ondas de "actividad cerebral"
-  acting    → cyan brillante, deformación máxima (habla)
+Cada partícula tiene:
+  - Posición home en distribución sunflower spiral deformada
+  - Spring physics + ruido Perlin para movimiento orgánico
+  - Trail (rastro de posiciones anteriores)
+  - 7% de probabilidad de ser un glyph con aberración cromática
+
+Ciclo de render: NSTimer 30 fps → tick_ → update partículas → setNeedsDisplay_
 """
 
 from __future__ import annotations
 
 import math
-import objc
+import random
+from typing import List, Optional, Tuple
+
 import AppKit
+import objc
 
 
-# ── Paleta por estado ─────────────────────────────────────────────────────────
+# ── Paletas de color por estado ───────────────────────────────────────────────
+# (r, g, b) normalizados 0-1
 
-_COLORS = {
-    "idle":      (0.00, 0.78, 1.00),   # azul eléctrico máximo
-    "listening": (0.00, 0.92, 0.65),   # verde-cyan eléctrico
-    "thinking":  (0.14, 0.04, 1.00),   # violeta eléctrico
-    "acting":    (0.12, 0.94, 1.00),   # cyan eléctrico brillante
+_PALETTES: dict[str, dict] = {
+    'idle':      {'a': (0.000, 1.000, 0.878), 'b': (0.482, 0.188, 1.000)},
+    'listening': {'a': (0.000, 1.000, 0.533), 'b': (0.000, 1.000, 0.878)},
+    'thinking':  {'a': (1.000, 0.882, 0.000), 'b': (1.000, 0.549, 0.000)},
+    'acting':    {'a': (1.000, 0.125, 0.376), 'b': (0.545, 0.000, 1.000)},
 }
 
-# Velocidad de rotación Y por estado
-_ROT_SPEED = {
-    "idle":      0.006,
-    "listening": 0.013,
-    "thinking":  0.018,
-    "acting":    0.025,
-}
+_GLYPHS = ['◆', '◇', '✦', '◉', '▸', '◌', '✕', '○', '◈', '▲', '▶', '▼', '⬡', '◐']
 
-# Amplitud base de deformación radial (fracción de ORB_RADIUS)
-_DEFORM_AMP = {
-    "idle":      0.032,
-    "listening": 0.090,
-    "thinking":  0.140,
-    "acting":    0.280,
-}
-
-ORB_RADIUS  = 36.0   # radio de la esfera en puntos macOS
-_HIT_RADIUS = 48.0   # zona interactiva (clic / drag)
-
-# Valores objetivo de corona por estado (para lerp suave)
-_DRIFT_SPD_T = {"idle": 0.30, "listening": 0.42, "thinking": 0.36, "acting": 0.55}
-_DRIFT_AMP_T = {"idle": 0.10, "listening": 0.16, "thinking": 0.13, "acting": 0.20}
-_CRV_SCALE_T = {"idle": 1.00, "listening": 1.30, "thinking": 1.15, "acting": 1.60}
-
-_LERP = 0.06   # factor de suavizado por frame (~1.2 s para llegar al 95 %)
-
-# ── Cuadrícula lat/lon ────────────────────────────────────────────────────────
-
-_N_LAT = 30   # bandas de latitud
-_N_LON = 38   # puntos por banda → total ~1140 puntos
+_NUM    = 80      # número de partículas
+_BASE_R = 85.0   # radio base de la distribución (compacto)
+_HIT_R  = 44.0   # zona interactiva para drag/clic
+_PROX_R = 115.0  # zona de proximidad para activar mouse events
 
 
-def _sphere_grid(n_lat: int, n_lon: int) -> list[tuple]:
+# ── Distribución sunflower spiral ─────────────────────────────────────────────
+
+def _cloud_home(i: int, total: int) -> Tuple[float, float]:
     """
-    Genera puntos en cuadrícula lat/lon sobre la esfera unidad.
-    Devuelve lista de (x, y, z, theta, phi).
+    Distribución sunflower spiral deformada orgánicamente.
+    Devuelve offset (dx, dy) respecto al centro de la nube.
     """
-    pts = []
-    for i in range(n_lat):
-        theta = math.pi * (i + 0.5) / n_lat   # 0 (polo N) → π (polo S)
-        st = math.sin(theta)
-        ct = math.cos(theta)
-        for j in range(n_lon):
-            phi = 2.0 * math.pi * j / n_lon
-            pts.append((st * math.cos(phi), st * math.sin(phi), ct, theta, phi))
-    return pts
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    r      = math.sqrt(i / total)
+    angle  = i * golden
+    deform = 0.6 + 0.7 * abs(math.sin(angle * 2.3)) + 0.3 * abs(math.cos(angle * 1.7))
+    rx = _BASE_R * r * deform * (1.0 + 0.3 * math.sin(angle * 4.0))
+    ry = _BASE_R * r * deform * 0.7 * (1.0 + 0.3 * math.cos(angle * 3.0))
+    return math.cos(angle) * rx, math.sin(angle) * ry
 
 
-# Pre-computar una sola vez
-_BASE_POINTS: list[tuple] = _sphere_grid(_N_LAT, _N_LON)
+# ── Partícula de la nube ──────────────────────────────────────────────────────
+
+class _Particle:
+    """
+    Partícula individual de la nube JARVIS.
+
+    Estados:
+      'cloud'  → spring hacia posición home con ruido orgánico
+      'travel' → curva bezier hacia destino (escalonado)
+      'wrap'   → orbitar array de puntos (borde ventana / icono Dock)
+    """
+
+    __slots__ = (
+        'home_dx', 'home_dy',
+        'x', 'y', 'vx', 'vy',
+        'base_size', 'size',
+        'opacity', 'phase', 'noise_t',
+        'step', 'acc', 'logic_frame',
+        'is_glyph', 'glyph',
+        'trail', 'max_trail',
+        'color', '_pal_a', '_pal_b',
+        'state',
+        'wpts', 'wi', 'wsp', 'woff_x', 'woff_y',
+        'tfx', 'tfy', 'ttx', 'tty',
+        'tt', 'tdelay', 'tdelayed', 'tnext',
+    )
+
+    def __init__(self, i: int, total: int, pal: dict) -> None:
+        self.home_dx, self.home_dy = _cloud_home(i, total)
+        self.x = 0.0
+        self.y = 0.0
+        self.vx = 0.0
+        self.vy = 0.0
+
+        self.base_size = 1.0 + random.random() * 4.5
+        self.size      = self.base_size
+        self.opacity   = 0.3 + random.random() * 0.7
+        self.phase     = random.random() * math.pi * 2.0
+        self.noise_t   = random.random() * 100.0
+
+        # on-twos: cada partícula salta 1 o 2 frames lógicos para
+        # dar aspecto de animación dibujada a mano (on-twos)
+        self.step        = 1 + random.randint(0, 1)
+        self.acc         = random.randint(0, self.step)
+        self.logic_frame = 0
+
+        self.is_glyph = random.random() < 0.07
+        self.glyph    = random.choice(_GLYPHS)
+
+        self.trail: List[Tuple[float, float]] = []
+        self.max_trail = 1 + random.randint(0, 5)
+
+        self._pal_a = pal['a']
+        self._pal_b = pal['b']
+        self._pick_color()
+
+        # estado
+        self.state   = 'cloud'
+        self.wpts    = None
+        self.wi      = 0.0
+        self.wsp     = 0.2 + random.random() * 0.5
+        self.woff_x  = (random.random() - 0.5) * 10.0
+        self.woff_y  = (random.random() - 0.5) * 10.0
+
+        self.tfx = self.tfy = self.ttx = self.tty = 0.0
+        self.tt       = 0.0
+        self.tdelay   = 0
+        self.tdelayed = 0
+        self.tnext    = 'cloud'
+
+    def _pick_color(self) -> None:
+        r = random.random()
+        if r < 0.60:
+            self.color = self._pal_a
+        elif r < 0.85:
+            self.color = self._pal_b
+        else:
+            self.color = (1.0, 1.0, 1.0)
+
+    def update_palette(self, pal: dict) -> None:
+        self._pal_a = pal['a']
+        self._pal_b = pal['b']
+        self._pick_color()
+
+    # ── física de nube ────────────────────────────────────────────────────────
+
+    def _cloud_target(self, cx: float, cy: float, audio: float) -> Tuple[float, float]:
+        self.noise_t += 0.008
+        nx = math.sin(self.noise_t * 1.3 + self.phase) * 14.0
+        ny = math.cos(self.noise_t * 1.1 + self.phase) * 10.0
+        # audio expande el radio de la nube
+        scale = 1.0 + audio * 0.45
+        return cx + self.home_dx * scale + nx, cy + self.home_dy * scale + ny
+
+    def _update_cloud(self, cx: float, cy: float, audio: float) -> None:
+        tx, ty = self._cloud_target(cx, cy, audio)
+        dx, dy  = tx - self.x, ty - self.y
+        self.vx += dx * 0.035
+        self.vy += dy * 0.035
+        self.vx *= 0.78
+        self.vy *= 0.78
+        self.trail.append((self.x, self.y))
+        if len(self.trail) > self.max_trail:
+            self.trail.pop(0)
+        self.x += self.vx
+        self.y += self.vy
+        self.size = self.base_size * (0.75 + 0.5 * math.sin(self.logic_frame * 0.05 + self.phase))
+
+    def _update_travel(self) -> None:
+        if self.tdelayed < self.tdelay:
+            self.tdelayed += 1
+            return
+        self.tt += 0.04
+        t = min(self.tt, 1.0)
+        # ease in-out cubic
+        e = 4.0 * t * t * t if t < 0.5 else 1.0 - (-2.0 * t + 2.0) ** 3 / 2.0
+        mid_x = (self.tfx + self.ttx) * 0.5 + (random.random() - 0.5) * 60.0
+        mid_y = min(self.tfy, self.tty) - 0.5 - random.random() * 80.0
+        q = 1.0 - e
+        self.trail.append((self.x, self.y))
+        if len(self.trail) > self.max_trail:
+            self.trail.pop(0)
+        self.x = q * q * self.tfx + 2.0 * q * e * mid_x + e * e * self.ttx
+        self.y = q * q * self.tfy + 2.0 * q * e * mid_y + e * e * self.tty
+        self.vx = 0.0
+        self.vy = 0.0
+        self.size = self.base_size * (1.0 + (1.0 - e) * 2.0)
+        if t >= 1.0:
+            self.state = self.tnext
+            self.tt = 0.0
+            if self.wpts:
+                self.wi = random.random() * len(self.wpts)
+
+    def _update_wrap(self) -> None:
+        if not self.wpts:
+            return
+        self.wi = (self.wi + self.wsp) % len(self.wpts)
+        pt = self.wpts[int(self.wi)]
+        self.trail.append((self.x, self.y))
+        if len(self.trail) > self.max_trail:
+            self.trail.pop(0)
+        self.x = pt[0] + self.woff_x + (random.random() - 0.5) * 5.0
+        self.y = pt[1] + self.woff_y + (random.random() - 0.5) * 5.0
+        self.vx = 0.0
+        self.vy = 0.0
+        self.size = self.base_size * (0.5 + 0.6 * abs(math.sin(self.logic_frame * 0.09 + self.phase)))
+
+    def update(self, cx: float, cy: float, audio: float) -> None:
+        """Update de lógica de la partícula. Se llama cada tick del timer."""
+        self.acc += 1
+        if self.acc < self.step:
+            return
+        self.acc = 0
+        self.logic_frame += 1
+        if self.state == 'cloud':
+            self._update_cloud(cx, cy, audio)
+        elif self.state == 'travel':
+            self._update_travel()
+        elif self.state == 'wrap':
+            self._update_wrap()
+
+    def send_to_wrap(self, wpts, delay: int = 0) -> None:
+        """Enviar la partícula a orbitar un conjunto de puntos."""
+        self.wpts  = wpts
+        tgt        = wpts[int(random.random() * len(wpts))]
+        self.tfx, self.tfy = self.x, self.y
+        self.ttx   = tgt[0] + (random.random() - 0.5) * 16.0
+        self.tty   = tgt[1] + (random.random() - 0.5) * 16.0
+        self.tt    = 0.0
+        self.tdelay   = delay
+        self.tdelayed = 0
+        self.tnext = 'wrap'
+        self.state = 'travel'
+        self.trail = []
+        self._pick_color()
+
+    def return_cloud(self) -> None:
+        """Devolver la partícula a la formación de nube."""
+        self.state = 'cloud'
+        self.wpts  = None
+        self.vx    = (random.random() - 0.5) * 4.0
+        self.vy    = (random.random() - 0.5) * 4.0
+        self.trail = []
+        self.tt    = 0.0
+        self._pick_color()
 
 
-# ── Vista principal ───────────────────────────────────────────────────────────
+# ── Vista principal ────────────────────────────────────────────────────────────
 
 class JarvisView(AppKit.NSView):
-    """Orb de puntos 3D a 30 fps."""
-
-    # ── init ──────────────────────────────────────────────────────────────────
+    """
+    Nube de partículas orgánica JARVIS.
+    Cubre la pantalla completa (transparente / click-through en reposo).
+    30 fps. Drag de la nube con el ratón.
+    """
 
     def initWithFrame_(self, frame):
         self = objc.super(JarvisView, self).initWithFrame_(frame)
         if self is None:
             return None
 
-        self._orb_x       = 80.0
-        self._orb_y       = 80.0
-        self._state       = "idle"
-
-        # Fases de animación
-        self._phase   = 0.0    # fase de deformación
-        self._rot_y   = 0.0    # rotación Y (horizontal, continua)
-        self._tilt_ph = 0.0    # tilt X (inclinación orgánica lenta)
-
+        self._orb_x = 80.0
+        self._orb_y = 80.0
+        self._state = 'idle'
         self._audio_level = 0.0
-        self._particles   = None
+        self._pal   = _PALETTES['idle']
 
-        # ── Variables suavizadas (lerp hacia el estado objetivo) ──────────────
-        r0, g0, b0 = _COLORS["idle"]
-        self._s_r          = r0
-        self._s_g          = g0
-        self._s_b          = b0
-        self._s_amp        = _DEFORM_AMP["idle"]
-        self._s_rot_spd    = _ROT_SPEED["idle"]
-        self._s_drift_spd  = _DRIFT_SPD_T["idle"]
-        self._s_drift_amp  = _DRIFT_AMP_T["idle"]
-        self._s_crv_scale  = _CRV_SCALE_T["idle"]
-        self._s_audio_bst  = 0.0   # audio boost suavizado
+        # inicializar partículas en posición home
+        self._particles_cloud: List[_Particle] = [
+            _Particle(i, _NUM, self._pal) for i in range(_NUM)
+        ]
+        for p in self._particles_cloud:
+            p.x = self._orb_x + p.home_dx + (random.random() - 0.5) * 20.0
+            p.y = self._orb_y + p.home_dy + (random.random() - 0.5) * 20.0
 
-        # Drag
+        self._fly_particles = None  # ParticleSystem para fly_to
+        self._hud           = None  # JarvisHUD para color dinámico
+
+        # drag
         self._dragging         = False
         self._did_drag         = False
         self._drag_mouse_start = (0.0, 0.0)
@@ -125,23 +290,31 @@ class JarvisView(AppKit.NSView):
         self._window            = None
         self._orb_click_handler = None
 
-        # Timer 30 fps
-        self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 30.0, self, "tick:", None, True
+        # fuente monospace para glyphs — tamaño fijo (evita crear NSFont por frame)
+        self._glyph_font = (
+            AppKit.NSFont.fontWithName_size_('SF Mono', 14.0) or
+            AppKit.NSFont.fontWithName_size_('Menlo', 14.0) or
+            AppKit.NSFont.monospacedSystemFontOfSize_weight_(14.0, AppKit.NSFontWeightRegular)
         )
+
+        # NSTimer 30 fps
+        self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 30.0, self, 'tick:', None, True,
+        )
+
         return self
 
-    # ── flags NSView ─────────────────────────────────────────────────────────
+    # ── NSView flags ──────────────────────────────────────────────────────────
 
-    def isOpaque(self):            return False
+    def isOpaque(self):              return False
     def acceptsFirstResponder(self): return True
 
-    # ── hit-test y drag del orb ──────────────────────────────────────────────
+    # ── hit-test / drag de la nube ────────────────────────────────────────────
 
     def hitTest_(self, point):
         dx = point.x - self._orb_x
         dy = point.y - self._orb_y
-        return self if dx * dx + dy * dy <= _HIT_RADIUS ** 2 else None
+        return self if dx * dx + dy * dy <= _HIT_R ** 2 else None
 
     def mouseDown_(self, event):
         loc = event.locationInWindow()
@@ -159,7 +332,7 @@ class JarvisView(AppKit.NSView):
         if dx * dx + dy * dy > 25:
             self._did_drag = True
         f = self.frame()
-        m = _HIT_RADIUS
+        m = _HIT_R
         self._orb_x = max(m, min(f.size.width  - m, self._drag_orb_start[0] + dx))
         self._orb_y = max(m, min(f.size.height - m, self._drag_orb_start[1] + dy))
 
@@ -170,281 +343,122 @@ class JarvisView(AppKit.NSView):
         if was_click and self._orb_click_handler is not None:
             self._orb_click_handler(self._orb_x, self._orb_y, self.frame().size.height)
 
-    # ── tick ─────────────────────────────────────────────────────────────────
+    # ── tick ──────────────────────────────────────────────────────────────────
 
     def tick_(self, timer):
-        st = self._state
-        al = self._audio_level
+        cx, cy = self._orb_x, self._orb_y
+        al     = self._audio_level
 
-        # ── Lerp de todos los parámetros hacia el objetivo del estado ─────────
-        tr, tg, tb = _COLORS.get(st, _COLORS["idle"])
-        self._s_r         += (tr                              - self._s_r)        * _LERP
-        self._s_g         += (tg                              - self._s_g)        * _LERP
-        self._s_b         += (tb                              - self._s_b)        * _LERP
-        self._s_amp       += (_DEFORM_AMP.get(st, 0.032)      - self._s_amp)      * _LERP
-        self._s_rot_spd   += (_ROT_SPEED.get(st, 0.006)       - self._s_rot_spd)  * _LERP
-        self._s_drift_spd += (_DRIFT_SPD_T.get(st, 0.30)      - self._s_drift_spd)* _LERP
-        self._s_drift_amp += (_DRIFT_AMP_T.get(st, 0.10)      - self._s_drift_amp)* _LERP
-        self._s_crv_scale += (_CRV_SCALE_T.get(st, 1.00)      - self._s_crv_scale)* _LERP
+        for p in self._particles_cloud:
+            p.update(cx, cy, al)
 
-        # Audio boost: respuesta más rápida (0.18) para no sentir latencia
-        t_bst = al * (0.50 if st in ("acting", "listening") else 0.0)
-        self._s_audio_bst += (t_bst - self._s_audio_bst) * 0.18
-
-        spd = self._s_rot_spd
-        self._rot_y   += spd
-        self._phase   += spd * 3.6
-        self._tilt_ph += 0.0065
-
-        if self._particles is not None:
-            self._particles.update(1.0 / 30.0)
+        if self._fly_particles is not None:
+            self._fly_particles.update(1.0 / 30.0)
 
         self.setNeedsDisplay_(True)
 
+        # proximidad: activar/desactivar mouse events según distancia del cursor
         if self._window is not None:
             loc  = AppKit.NSEvent.mouseLocation()
-            dx   = loc.x - self._orb_x
-            dy   = loc.y - self._orb_y
-            near = dx * dx + dy * dy <= (_HIT_RADIUS + 8.0) ** 2
+            dx   = loc.x - cx
+            dy   = loc.y - cy
+            near = dx * dx + dy * dy <= _PROX_R ** 2
             self._window.setIgnoresMouseEvents_(not near)
 
-    # ── draw ─────────────────────────────────────────────────────────────────
+    # ── draw ──────────────────────────────────────────────────────────────────
 
     def drawRect_(self, dirty_rect):
-        # Usar valores suavizados en lugar de los del estado directo
-        r, g, b = self._s_r, self._s_g, self._s_b
-        ox, oy  = self._orb_x, self._orb_y
-        ph      = self._phase
-        al      = self._audio_level
+        cx, cy  = self._orb_x, self._orb_y
+        ar, ag, ab = self._pal['a']   # color acento A (principal)
 
-        # Amplitud: suavizada + audio boost suavizado
-        amp = self._s_amp + self._s_audio_bst
+        # ── Partículas de la nube ─────────────────────────────────────────────
+        for p in self._particles_cloud:
+            cr, cg, cb = p.color
+            a  = p.opacity
+            px, py, sz = p.x, p.y, p.size
 
-        # ── Matrices de rotación (pre-calcular) ───────────────────────────────
-        cry = math.cos(self._rot_y)
-        sry = math.sin(self._rot_y)
+            # trail: líneas progresivamente más transparentes y delgadas
+            trail = p.trail
+            n_tr  = len(trail)
+            if n_tr >= 2:
+                for i in range(n_tr - 1):
+                    x0, y0 = trail[i]
+                    x1, y1 = trail[i + 1]
+                    seg_alpha = a * (i / n_tr) * 0.45
+                    if seg_alpha < 0.008:
+                        continue
+                    seg = AppKit.NSBezierPath.bezierPath()
+                    seg.setLineWidth_(sz * 0.28 * ((i + 1) / n_tr))
+                    seg.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+                    seg.moveToPoint_(AppKit.NSMakePoint(x0, y0))
+                    seg.lineToPoint_(AppKit.NSMakePoint(x1, y1))
+                    AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, seg_alpha).set()
+                    seg.stroke()
 
-        # Tilt X: doble frecuencia para movimiento más orgánico
-        tilt = (0.24 * math.sin(self._tilt_ph)
-                + 0.08 * math.sin(self._tilt_ph * 2.47))
-        ctx  = math.cos(tilt)
-        stx  = math.sin(tilt)
+            # dibujar partícula
+            if p.is_glyph and sz > 2.5:
+                # aberración cromática: rojo (izq) + cyan (der) + color propio (centro)
+                font = self._glyph_font
 
-        # Onda de habla: se activa cuando Jarvis habla (acting + audio)
-        speech_amp = al * 0.22 if self._state == "acting" else 0.0
-
-        # ── Proyectar todos los puntos ─────────────────────────────────────────
-        projected: list = []
-
-        for bx, by, bz, theta, phi in _BASE_POINTS:
-
-            # Offset por punto (golden ratio) → cada punto se mueve independiente
-            t_off = theta * 1.6180 + phi * 0.6180
-
-            # Deformación radial: 5 armónicos con offsets únicos por punto
-            d = (
-                0.36 * math.sin(2.0 * theta + ph * 0.78 + t_off * 0.30) * math.cos(2.0 * phi + ph * 0.55)
-                + 0.24 * math.sin(3.5 * theta - ph * 1.12 + t_off * 0.52)
-                + 0.16 * math.cos(theta  + 3.0 * phi - ph * 0.42 + t_off * 0.18)
-                + 0.14 * math.sin(5.0 * theta + 2.5 * phi + ph * 1.60 + t_off * 0.40)
-                + 0.10 * math.cos(4.0 * theta - 1.5 * phi + ph * 0.95 + t_off * 0.65)
-            )
-
-            # Onda de habla: burbujeo reactivo al nivel de audio
-            if speech_amp > 0.0:
-                d += speech_amp * math.sin(theta * 3.0 + ph * 2.80 + t_off) \
-                               * math.cos(phi   * 2.0 + ph * 1.90)
-
-            radius = ORB_RADIUS * (1.0 + amp * d)
-
-            # Rotación alrededor del eje Y
-            rx =  bx * cry + bz * sry
-            rz = -bx * sry + bz * cry
-            ry =  by
-
-            # Tilt alrededor del eje X
-            fx =  rx
-            fy =  ry * ctx - rz * stx
-            fz =  ry * stx + rz * ctx
-
-            # Perspectiva leve (los puntos cercanos parecen ligeramente más grandes)
-            persp = 0.82 + 0.18 * fz
-
-            sx = ox + fx * radius * persp
-            sy = oy + fy * radius * persp
-
-            # Brillo: frente moderado + limbo (borde) muy brillante → efecto 3D
-            front = (fz + 1.0) * 0.5                       # 0 = atrás, 1 = delante
-            limbo = math.sqrt(max(0.0, 1.0 - fz * fz))    # máx en ecuador (borde visual)
-            bright = 0.18 * front + 0.82 * limbo
-
-            projected.append((fz, sx, sy, bright))
-
-        # Ordenar de atrás a adelante (painter's algorithm)
-        projected.sort(key=lambda p: p[0])
-
-        # ── Corona solar ─────────────────────────────────────────────────────
-        self._draw_corona(ox, oy, r, g, b, amp)
-
-        # ── Puntos en dos pasadas: glow (grande, transparente) + core (pequeño, opaco) ──
-        N_BK = 8
-        buckets: list[list] = [[] for _ in range(N_BK)]
-
-        for fz, sx, sy, bright in projected:
-            bk = min(N_BK - 1, int(bright * N_BK))
-            buckets[bk].append((sx, sy, bright))
-
-        for bk, dots in enumerate(buckets):
-            if not dots:
-                continue
-            bri = (bk + 0.5) / N_BK  # 0.06 a 0.94
-
-            # Color del bucket: de azul oscuro (atrás) a cyan brillante (delante/borde)
-            dr = min(1.0, r * (0.15 + 0.85 * bri) + 0.04)
-            dg = min(1.0, g * (0.15 + 0.85 * bri) + 0.04)
-            db = min(1.0, b * (0.30 + 0.70 * bri) + 0.18 * (1.0 - bri))
-
-            # ── Pasada glow: halo suave alrededor de cada punto ───────────────
-            glow_r = 1.6 + 1.8 * bri
-            path_g = AppKit.NSBezierPath.bezierPath()
-            for sx, sy, _ in dots:
-                path_g.appendBezierPathWithOvalInRect_(
-                    AppKit.NSMakeRect(sx - glow_r, sy - glow_r, glow_r * 2.0, glow_r * 2.0)
+                s_red = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    p.glyph,
+                    {AppKit.NSFontAttributeName: font,
+                     AppKit.NSForegroundColorAttributeName:
+                         AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 0.125, 0.376, a * 0.30)},
                 )
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(
-                dr, dg, db, max(0.01, 0.06 * bri)
-            ).set()
-            path_g.fill()
+                s_red.drawAtPoint_(AppKit.NSMakePoint(px - 1.5, py))
 
-            # ── Pasada core: punto sólido ─────────────────────────────────────
-            core_r = 0.55 + 0.70 * bri
-            path_c = AppKit.NSBezierPath.bezierPath()
-            for sx, sy, _ in dots:
-                path_c.appendBezierPathWithOvalInRect_(
-                    AppKit.NSMakeRect(sx - core_r, sy - core_r, core_r * 2.0, core_r * 2.0)
+                s_cyan = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    p.glyph,
+                    {AppKit.NSFontAttributeName: font,
+                     AppKit.NSForegroundColorAttributeName:
+                         AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 1.0, 0.878, a * 0.30)},
                 )
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(
-                dr, dg, db, 0.10 + 0.82 * bri
-            ).set()
-            path_c.fill()
+                s_cyan.drawAtPoint_(AppKit.NSMakePoint(px + 1.5, py))
 
-        # ── Partículas fly_to ─────────────────────────────────────────────────
-        if self._particles is not None:
-            self._particles.draw()
-
-    # ── Corona solar ─────────────────────────────────────────────────────────
-
-    # Parámetros por filamento: (ángulo_base, len_factor, curve_factor, bright, phase_off)
-    #   len_factor  : 0–1 → longitud relativa al radio
-    #   curve_factor: curvatura perpendicular (+ derecha, - izquierda)
-    #   bright      : 0–1 → brillo base
-    _CORONA = tuple(
-        (
-            (i * 2.39996) % (2 * math.pi),                    # ángulo (golden ratio)
-            0.10 + 0.90 * abs(math.sin(i * 0.6931 + 0.50)),   # longitud
-            0.32 * math.sin(i * 1.3100 + 0.28),               # curvatura
-            0.18 + 0.82 * abs(math.sin(i * 2.39996)),         # brillo
-            i * 2.39996 * 0.51,                               # desfase de fase
-        )
-        for i in range(115)
-    )
-
-    def _draw_corona(self, ox: float, oy: float, r: float, g: float, b: float,
-                     amp: float) -> None:
-        """
-        Corona solar: filamentos finos que emergen de la superficie del orb.
-        Igual que prominencias solares o conexiones neuronales.
-        3 pasadas: glow exterior → cuerpo → núcleo blanco-azul.
-        """
-        ph = self._phase
-
-        # ── Halo ambiental (nube difusa detrás) ───────────────────────────────
-        pulse_h = 0.80 + 0.20 * math.sin(ph * 0.28)
-        for df, ba in ((1.38, 0.012), (1.18, 0.022), (1.07, 0.038)):
-            d = ORB_RADIUS * df
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b, ba * pulse_h).set()
-            AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                AppKit.NSMakeRect(ox - d, oy - d, d * 2.0, d * 2.0)
-            ).fill()
-
-        # ── Parámetros suavizados (sin saltos de estado) ──────────────────────
-        drift_spd   = self._s_drift_spd
-        drift_amp   = self._s_drift_amp
-        crv_scale   = self._s_crv_scale
-        audio_boost = self._s_audio_bst
-
-        # ── Geometría de filamentos ────────────────────────────────────────────
-        geom: list = []
-        for ang0, len_f, crv, bright, ph_off in self._CORONA:
-
-            # Ángulo: deriva principal + flutter secundario siempre presente
-            angle = (ang0
-                     + drift_amp * math.sin(ph * drift_spd + ph_off)
-                     + 0.045    * math.sin(ph * 0.78       + ph_off * 1.618))
-
-            # Origen: justo en la superficie
-            base_r = ORB_RADIUS * (1.01 + amp * 0.06 * abs(math.sin(ph * 0.38 + ph_off)))
-            bx = ox + base_r * math.cos(angle)
-            by = oy + base_r * math.sin(angle)
-
-            # Longitud: un poco más corta + reacción al audio y estado
-            length = ORB_RADIUS * (0.03 + 0.26 * len_f) \
-                     * (0.55 + 0.45 * abs(math.sin(ph * 0.20 + ph_off))) \
-                     * (1.0 + amp * 0.55 + audio_boost)
-
-            # Punto final
-            ex = ox + (base_r + length) * math.cos(angle)
-            ey = oy + (base_r + length) * math.sin(angle)
-
-            # Control point: curvatura más viva según estado
-            perp = angle + math.pi * 0.5
-            cp_d = length * crv * crv_scale * (0.75 + 0.25 * math.sin(ph * 0.32 + ph_off))
-            mx   = (bx + ex) * 0.5 + cp_d * math.cos(perp)
-            my   = (by + ey) * 0.5 + cp_d * math.sin(perp)
-
-            geom.append((bx, by, mx, my, ex, ey, bright))
-
-        # ── 4 pasadas: muy difuso → difuso → suave → tenue hilo ──────────────
-        # Sin núcleo duro — solo capas de glow superpuestas
-        N_BK = 6
-        for line_w, alpha_f in ((20.0, 0.010), (10.0, 0.022), (4.5, 0.055), (1.4, 0.10)):
-            bk_paths = [AppKit.NSBezierPath.bezierPath() for _ in range(N_BK)]
-
-            for bx, by, mx, my, ex, ey, bright in geom:
-                bk = min(N_BK - 1, int(bright * N_BK))
-                p  = bk_paths[bk]
-                p.moveToPoint_(AppKit.NSMakePoint(bx, by))
-                p.curveToPoint_controlPoint1_controlPoint2_(
-                    AppKit.NSMakePoint(ex, ey),
-                    AppKit.NSMakePoint(mx, my),
-                    AppKit.NSMakePoint(mx, my),
+                s_main = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    p.glyph,
+                    {AppKit.NSFontAttributeName: font,
+                     AppKit.NSForegroundColorAttributeName:
+                         AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a)},
                 )
+                s_main.drawAtPoint_(AppKit.NSMakePoint(px, py))
 
-            for bk, path in enumerate(bk_paths):
-                if path.elementCount() == 0:
-                    continue
-                bri = (bk + 0.5) / N_BK
-                path.setLineWidth_(line_w)
-                path.setLineCapStyle_(AppKit.NSRoundLineCapStyle)
-                AppKit.NSColor.colorWithRed_green_blue_alpha_(
-                    r, g, b, alpha_f * bri
-                ).set()
-                path.stroke()
+            else:
+                # glow dot: halo exterior + core + núcleo oscuro
+                for glow_r, ga in ((sz * 4.0, 0.040), (sz * 2.2, 0.090)):
+                    AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * ga).set()
+                    AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                        AppKit.NSMakeRect(px - glow_r, py - glow_r, glow_r * 2.0, glow_r * 2.0)
+                    ).fill()
+
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * 0.85).set()
+                AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                    AppKit.NSMakeRect(px - sz, py - sz, sz * 2.0, sz * 2.0)
+                ).fill()
+
+                # núcleo oscuro (efecto ink / glass)
+                cr_k = sz * 0.30
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.70).set()
+                AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                    AppKit.NSMakeRect(px - cr_k, py - cr_k, cr_k * 2.0, cr_k * 2.0)
+                ).fill()
+
+        # ── Partículas fly_to (encima de la nube) ────────────────────────────
+        if self._fly_particles is not None:
+            self._fly_particles.draw()
 
     # ── API pública ───────────────────────────────────────────────────────────
 
-    def attach_particles(self, particles) -> None:
-        self._particles = particles
-
-    def set_window(self, win) -> None:
-        self._window = win
-
-    def set_orb_click_handler(self, fn) -> None:
-        """fn(orb_x, orb_y, screen_h) llamada desde el hilo principal al hacer clic."""
-        self._orb_click_handler = fn
-
     def set_state(self, state: str) -> None:
         self._state = state
+        pal = _PALETTES.get(state, _PALETTES['idle'])
+        self._pal = pal
+        for p in self._particles_cloud:
+            p.update_palette(pal)
+        # sincronizar color del HUD si está conectado
+        if self._hud is not None:
+            self._hud.set_accent_color(*pal['a'])
 
     def set_position(self, x: float, y: float) -> None:
         self._orb_x = x
@@ -453,6 +467,22 @@ class JarvisView(AppKit.NSView):
     def set_audio_level(self, level: float) -> None:
         self._audio_level = max(0.0, min(1.0, level))
 
+    def attach_particles(self, particles) -> None:
+        """Conectar el sistema de partículas fly_to."""
+        self._fly_particles = particles
+
+    def set_window(self, win) -> None:
+        """Pasar referencia NSWindow para toggle de mouse events por proximidad."""
+        self._window = win
+
+    def set_orb_click_handler(self, fn) -> None:
+        """fn(orb_x, orb_y, screen_h) — callback al hacer clic en la nube."""
+        self._orb_click_handler = fn
+
+    def set_hud(self, hud) -> None:
+        """Conectar JarvisHUD para actualizar su color de borde al cambiar estado."""
+        self._hud = hud
+
     @property
-    def orb_position(self) -> tuple[float, float]:
+    def orb_position(self) -> Tuple[float, float]:
         return self._orb_x, self._orb_y

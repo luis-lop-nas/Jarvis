@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS — Visual Concept</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=Permanent+Marker&display=swap');
+
+  :root {
+    --ink: #0a0a0f;
+    --paper: #f5f0e8;
+    --neon-a: #ff2d6b;
+    --neon-b: #00f5d4;
+    --neon-c: #f5c400;
+    --neon-d: #7b2fff;
+    --grain-opacity: 0.045;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--ink);
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Space Mono', monospace;
+    cursor: none;
+  }
+
+  /* ── Grain overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1000;
+    opacity: var(--grain-opacity);
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    animation: grainShift 0.15s steps(1) infinite;
+  }
+
+  @keyframes grainShift {
+    0%   { transform: translate(0,0); }
+    25%  { transform: translate(-2px, 1px); }
+    50%  { transform: translate(1px, -2px); }
+    75%  { transform: translate(2px, 1px); }
+    100% { transform: translate(-1px, -1px); }
+  }
+
+  /* ── Halftone background ── */
+  .halftone-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(circle, rgba(255,45,107,0.06) 1px, transparent 1px),
+      radial-gradient(circle, rgba(0,245,212,0.04) 1px, transparent 1px);
+    background-size: 24px 24px, 36px 36px;
+    background-position: 0 0, 12px 12px;
+    animation: halftoneShift 8s ease-in-out infinite alternate;
+  }
+
+  @keyframes halftoneShift {
+    from { opacity: 0.4; transform: scale(1); }
+    to   { opacity: 0.8; transform: scale(1.02); }
+  }
+
+  /* ── Custom cursor ── */
+  .cursor {
+    position: fixed;
+    width: 12px;
+    height: 12px;
+    background: var(--neon-b);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%, -50%);
+    mix-blend-mode: exclusion;
+    transition: transform 0.05s;
+  }
+  .cursor-trail {
+    position: fixed;
+    width: 32px;
+    height: 32px;
+    border: 1.5px solid var(--neon-a);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9998;
+    transform: translate(-50%, -50%);
+    opacity: 0.5;
+    transition: left 0.12s ease, top 0.12s ease;
+  }
+
+  /* ── Main stage ── */
+  .stage {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── Orb container ── */
+  .orb-wrap {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Speed lines ring */
+  .speed-lines {
+    position: absolute;
+    inset: -40px;
+    animation: spinLines 3s linear infinite;
+  }
+  .speed-lines svg { width: 100%; height: 100%; }
+
+  @keyframes spinLines {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+
+  /* Chromatic aberration halos */
+  .halo {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(1px);
+    mix-blend-mode: screen;
+  }
+  .halo-a {
+    width: 160px; height: 160px;
+    background: radial-gradient(circle, rgba(255,45,107,0.35) 0%, transparent 70%);
+    transform: translate(-4px, -4px);
+    animation: haloFloat 2.1s ease-in-out infinite alternate;
+  }
+  .halo-b {
+    width: 160px; height: 160px;
+    background: radial-gradient(circle, rgba(0,245,212,0.35) 0%, transparent 70%);
+    transform: translate(4px, 4px);
+    animation: haloFloat 2.1s ease-in-out infinite alternate-reverse;
+  }
+  .halo-c {
+    width: 120px; height: 120px;
+    background: radial-gradient(circle, rgba(245,196,0,0.2) 0%, transparent 70%);
+    animation: haloFloat 1.7s ease-in-out infinite alternate;
+  }
+
+  @keyframes haloFloat {
+    from { transform: translate(-4px, -4px) scale(1); }
+    to   { transform: translate(4px, 4px) scale(1.08); }
+  }
+
+  /* Core orb */
+  .orb-core {
+    position: relative;
+    z-index: 5;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 38% 35%, rgba(255,255,255,0.25) 0%, transparent 50%),
+      radial-gradient(circle, #0a0a0f 0%, #0d0d1a 100%);
+    border: 2px solid rgba(0,245,212,0.6);
+    box-shadow:
+      0 0 0 1px rgba(255,45,107,0.3),
+      0 0 20px rgba(0,245,212,0.4),
+      0 0 60px rgba(0,245,212,0.15),
+      inset 0 0 30px rgba(0,245,212,0.1);
+    animation: orbPulse 2s ease-in-out infinite;
+    cursor: none;
+    transition: all 0.3s;
+  }
+
+  .orb-core::after {
+    content: '';
+    position: absolute;
+    top: 12px; left: 22px;
+    width: 30px; height: 16px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    transform: rotate(-30deg);
+    filter: blur(2px);
+  }
+
+  @keyframes orbPulse {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255,45,107,0.3), 0 0 20px rgba(0,245,212,0.4), 0 0 60px rgba(0,245,212,0.15), inset 0 0 30px rgba(0,245,212,0.1); }
+    50%       { box-shadow: 0 0 0 2px rgba(255,45,107,0.5), 0 0 35px rgba(0,245,212,0.6), 0 0 90px rgba(0,245,212,0.25), inset 0 0 40px rgba(0,245,212,0.15); }
+  }
+
+  /* On-twos dot pattern on orb */
+  .orb-dots {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    opacity: 0.15;
+    mix-blend-mode: screen;
+    background-image: radial-gradient(circle, rgba(0,245,212,1) 1px, transparent 1px);
+    background-size: 10px 10px;
+    animation: dotsWave 4s ease-in-out infinite;
+  }
+
+  @keyframes dotsWave {
+    0%,100% { background-size: 10px 10px; opacity: 0.12; }
+    50%      { background-size: 8px 8px; opacity: 0.2; }
+  }
+
+  /* ── Orbiting rings ── */
+  .orbit-ring {
+    position: absolute;
+    border-radius: 50%;
+    border-style: solid;
+    pointer-events: none;
+  }
+  .orbit-1 {
+    width: 170px; height: 170px;
+    border: 1.5px solid rgba(255,45,107,0.4);
+    border-top-color: var(--neon-a);
+    animation: orbitSpin1 3s linear infinite;
+    top: 15px; left: 15px;
+  }
+  .orbit-2 {
+    width: 190px; height: 190px;
+    border: 1px solid rgba(0,245,212,0.25);
+    border-right-color: var(--neon-b);
+    animation: orbitSpin2 5s linear infinite reverse;
+    top: 5px; left: 5px;
+  }
+  .orbit-3 {
+    width: 145px; height: 145px;
+    border: 1px dashed rgba(245,196,0,0.2);
+    border-bottom-color: var(--neon-c);
+    animation: orbitSpin1 7s linear infinite;
+    top: 27px; left: 27px;
+  }
+
+  @keyframes orbitSpin1 {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  @keyframes orbitSpin2 {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(-360deg); }
+  }
+
+  /* Orbit dot markers */
+  .orbit-dot {
+    position: absolute;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    top: -2.5px; left: 50%;
+    transform: translateX(-50%);
+  }
+  .orbit-1 .orbit-dot { background: var(--neon-a); box-shadow: 0 0 6px var(--neon-a); }
+  .orbit-2 .orbit-dot { background: var(--neon-b); box-shadow: 0 0 6px var(--neon-b); top: auto; bottom: -2.5px; }
+  .orbit-3 .orbit-dot { background: var(--neon-c); box-shadow: 0 0 6px var(--neon-c); }
+
+  /* ── State label ── */
+  .state-badge {
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    border: 1.5px solid var(--neon-b);
+    color: var(--neon-b);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 11px;
+    letter-spacing: 3px;
+    padding: 2px 10px;
+    white-space: nowrap;
+    z-index: 20;
+  }
+
+  /* ── Comic title ── */
+  .title-wrap {
+    margin-top: 48px;
+    position: relative;
+    text-align: center;
+  }
+
+  .title-main {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(64px, 10vw, 110px);
+    color: var(--paper);
+    letter-spacing: 8px;
+    line-height: 0.9;
+    position: relative;
+    display: inline-block;
+    /* Ink outline */
+    -webkit-text-stroke: 2px rgba(255,255,255,0.08);
+    text-shadow:
+      4px 4px 0 var(--neon-a),
+      -2px -2px 0 var(--neon-b),
+      0 0 40px rgba(0,245,212,0.3);
+    animation: titleGlitch 6s steps(1) infinite;
+  }
+
+  @keyframes titleGlitch {
+    0%,92%,100% {
+      text-shadow: 4px 4px 0 var(--neon-a), -2px -2px 0 var(--neon-b), 0 0 40px rgba(0,245,212,0.3);
+      clip-path: none;
+    }
+    93% {
+      text-shadow: -4px 4px 0 var(--neon-a), 4px -4px 0 var(--neon-b);
+      clip-path: polygon(0 30%, 100% 30%, 100% 60%, 0 60%);
+      transform: translate(3px, 0);
+    }
+    94% {
+      clip-path: polygon(0 0, 100% 0, 100% 40%, 0 40%);
+      transform: translate(-3px, 0);
+      text-shadow: 6px 0 0 var(--neon-a), -6px 0 0 var(--neon-b);
+    }
+    95% {
+      clip-path: none;
+      transform: translate(0);
+      text-shadow: 4px 4px 0 var(--neon-a), -2px -2px 0 var(--neon-b), 0 0 40px rgba(0,245,212,0.3);
+    }
+  }
+
+  .title-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 6px;
+    color: rgba(245,196,0,0.8);
+    margin-top: 6px;
+    text-transform: uppercase;
+    position: relative;
+  }
+  .title-sub::before, .title-sub::after {
+    content: '▸';
+    margin: 0 8px;
+    color: var(--neon-a);
+  }
+
+  /* ── State buttons ── */
+  .state-buttons {
+    display: flex;
+    gap: 12px;
+    margin-top: 36px;
+  }
+
+  .btn-state {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 13px;
+    letter-spacing: 2px;
+    padding: 8px 18px;
+    background: transparent;
+    color: rgba(245,240,232,0.5);
+    border: 1.5px solid rgba(245,240,232,0.15);
+    cursor: none;
+    transition: all 0.15s steps(2);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .btn-state::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+
+  .btn-state:hover::before { opacity: 0.08; }
+
+  .btn-state[data-state="idle"]      { --clr: #00f5d4; }
+  .btn-state[data-state="listening"] { --clr: #00ff88; }
+  .btn-state[data-state="thinking"]  { --clr: #f5c400; }
+  .btn-state[data-state="acting"]    { --clr: #ff2d6b; }
+
+  .btn-state.active {
+    color: var(--clr);
+    border-color: var(--clr);
+    box-shadow: 0 0 16px rgba(0,0,0,0.5), inset 0 0 8px rgba(0,0,0,0.3);
+    text-shadow: 0 0 10px var(--clr);
+  }
+
+  /* ── Comic speech bubble / HUD ── */
+  .hud-panel {
+    margin-top: 32px;
+    position: relative;
+    max-width: 420px;
+    width: 90vw;
+  }
+
+  .hud-text {
+    background: rgba(10,10,15,0.92);
+    border: 2px solid var(--neon-b);
+    color: var(--paper);
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 16px 20px;
+    position: relative;
+    min-height: 56px;
+  }
+
+  .hud-text::before {
+    content: '◈ JARVIS';
+    display: block;
+    color: var(--neon-b);
+    font-size: 10px;
+    letter-spacing: 3px;
+    margin-bottom: 8px;
+    font-family: 'Bebas Neue', sans-serif;
+  }
+
+  /* comic tail */
+  .hud-text::after {
+    content: '';
+    position: absolute;
+    top: -10px; left: 28px;
+    border-left: 10px solid transparent;
+    border-right: 0 solid transparent;
+    border-bottom: 10px solid var(--neon-b);
+  }
+
+  .hud-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 12px;
+    background: var(--neon-b);
+    margin-left: 2px;
+    animation: blinkCursor 0.7s steps(1) infinite;
+    vertical-align: middle;
+  }
+
+  @keyframes blinkCursor { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+
+  /* Decorative corner marks */
+  .hud-panel .corner {
+    position: absolute;
+    width: 10px; height: 10px;
+    border-color: var(--neon-a);
+    border-style: solid;
+    z-index: 2;
+  }
+  .corner.tl { top: -2px; left: -2px; border-width: 2px 0 0 2px; }
+  .corner.tr { top: -2px; right: -2px; border-width: 2px 2px 0 0; }
+  .corner.bl { bottom: -2px; left: -2px; border-width: 0 0 2px 2px; }
+  .corner.br { bottom: -2px; right: -2px; border-width: 0 2px 2px 0; }
+
+  /* ── Floating particles ── */
+  .particle {
+    position: fixed;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* ── Action flash ── */
+  .flash-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    pointer-events: none;
+    opacity: 0;
+    mix-blend-mode: screen;
+  }
+
+  /* ── Scanlines ── */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+  }
+
+</style>
+</head>
+<body>
+
+<div class="halftone-bg"></div>
+<div class="cursor" id="cursor"></div>
+<div class="cursor-trail" id="cursorTrail"></div>
+<div class="flash-overlay" id="flashOverlay"></div>
+
+<div class="stage">
+
+  <!-- ORB -->
+  <div class="orb-wrap" id="orbWrap">
+    <div class="speed-lines">
+      <svg viewBox="0 0 280 280" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <g id="linesGroup">
+          <!-- 16 speed lines radiating from center -->
+          <line x1="140" y1="140" x2="140" y2="0"   stroke="rgba(255,45,107,0.15)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="240" y2="40"  stroke="rgba(0,245,212,0.12)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="280" y2="140" stroke="rgba(255,45,107,0.15)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="240" y2="240" stroke="rgba(0,245,212,0.12)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="140" y2="280" stroke="rgba(255,45,107,0.15)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="40"  y2="240" stroke="rgba(0,245,212,0.12)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="0"   y2="140" stroke="rgba(255,45,107,0.15)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="40"  y2="40"  stroke="rgba(0,245,212,0.12)" stroke-width="1"/>
+          <line x1="140" y1="140" x2="190" y2="10"  stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="270" y2="90"  stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="270" y2="190" stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="190" y2="270" stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="90"  y2="270" stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="10"  y2="190" stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="10"  y2="90"  stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+          <line x1="140" y1="140" x2="90"  y2="10"  stroke="rgba(245,196,0,0.08)" stroke-width="0.5"/>
+        </g>
+      </svg>
+    </div>
+
+    <div class="halo halo-a"></div>
+    <div class="halo halo-b"></div>
+    <div class="halo halo-c"></div>
+
+    <div class="orbit-ring orbit-3">
+      <div class="orbit-dot"></div>
+    </div>
+    <div class="orbit-ring orbit-1">
+      <div class="orbit-dot"></div>
+    </div>
+    <div class="orbit-ring orbit-2">
+      <div class="orbit-dot"></div>
+    </div>
+
+    <div class="orb-core" id="orb">
+      <div class="orb-dots"></div>
+    </div>
+
+    <div class="state-badge" id="stateBadge">● IDLE</div>
+  </div>
+
+  <!-- TITLE -->
+  <div class="title-wrap">
+    <div class="title-main">JARVIS</div>
+    <div class="title-sub">Sistema de asistencia avanzada</div>
+  </div>
+
+  <!-- STATE BUTTONS -->
+  <div class="state-buttons">
+    <button class="btn-state active" data-state="idle">Idle</button>
+    <button class="btn-state" data-state="listening">Listen</button>
+    <button class="btn-state" data-state="thinking">Think</button>
+    <button class="btn-state" data-state="acting">Act</button>
+  </div>
+
+  <!-- HUD -->
+  <div class="hud-panel">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+    <div class="hud-text" id="hudText">
+      <span id="hudContent">Listo. En espera de instrucciones.</span><span class="hud-cursor"></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Custom cursor ──
+const cursor = document.getElementById('cursor');
+const trail  = document.getElementById('cursorTrail');
+document.addEventListener('mousemove', e => {
+  cursor.style.left = e.clientX + 'px';
+  cursor.style.top  = e.clientY + 'px';
+  setTimeout(() => {
+    trail.style.left = e.clientX + 'px';
+    trail.style.top  = e.clientY + 'px';
+  }, 80);
+});
+
+// ── State system ──
+const states = {
+  idle: {
+    color:   '#00f5d4',
+    shadow:  'rgba(0,245,212',
+    label:   '● IDLE',
+    texts: [
+      'Listo. En espera de instrucciones.',
+      'Sistema activo. Escuchando...',
+      'Todos los sistemas operativos.'
+    ],
+    orbBg: 'radial-gradient(circle at 38% 35%, rgba(255,255,255,0.2) 0%, transparent 50%), radial-gradient(circle, #0a0a0f 0%, #0d0d1a 100%)',
+    orbBorder: 'rgba(0,245,212,0.6)',
+  },
+  listening: {
+    color:   '#00ff88',
+    shadow:  'rgba(0,255,136',
+    label:   '◉ LISTENING',
+    texts: [
+      'Escuchando. Habla cuando quieras.',
+      '...procesando entrada de audio...',
+      'Wake word detectado. Adelante.'
+    ],
+    orbBg: 'radial-gradient(circle at 38% 35%, rgba(0,255,136,0.15) 0%, transparent 50%), radial-gradient(circle, #050f0a 0%, #081a10 100%)',
+    orbBorder: 'rgba(0,255,136,0.8)',
+  },
+  thinking: {
+    color:   '#f5c400',
+    shadow:  'rgba(245,196,0',
+    label:   '◌ THINKING',
+    texts: [
+      'Procesando consulta...',
+      'Analizando contexto del sistema.',
+      'Consultando base de conocimiento.'
+    ],
+    orbBg: 'radial-gradient(circle at 38% 35%, rgba(245,196,0,0.15) 0%, transparent 50%), radial-gradient(circle, #0f0d00 0%, #1a1500 100%)',
+    orbBorder: 'rgba(245,196,0,0.8)',
+  },
+  acting: {
+    color:   '#ff2d6b',
+    shadow:  'rgba(255,45,107',
+    label:   '◆ ACTING',
+    texts: [
+      'Ejecutando acción...',
+      'Herramienta activada. Un momento.',
+      'Desplegando respuesta.'
+    ],
+    orbBg: 'radial-gradient(circle at 38% 35%, rgba(255,45,107,0.2) 0%, transparent 50%), radial-gradient(circle, #150005 0%, #1a000a 100%)',
+    orbBorder: 'rgba(255,45,107,0.9)',
+  }
+};
+
+let currentState = 'idle';
+const orb        = document.getElementById('orb');
+const stateBadge = document.getElementById('stateBadge');
+const hudContent = document.getElementById('hudContent');
+const flashOverlay = document.getElementById('flashOverlay');
+
+function setState(name) {
+  currentState = name;
+  const s = states[name];
+
+  // Update orb appearance
+  orb.style.background = s.orbBg;
+  orb.style.borderColor = s.orbBorder;
+  orb.style.boxShadow = `
+    0 0 0 1px ${s.shadow},0.4),
+    0 0 24px ${s.shadow},0.5),
+    0 0 70px ${s.shadow},0.2),
+    inset 0 0 30px ${s.shadow},0.12)
+  `;
+
+  stateBadge.textContent = s.label;
+  stateBadge.style.borderColor = s.color;
+  stateBadge.style.color = s.color;
+
+  // Update HUD with typewriter
+  const text = s.texts[Math.floor(Math.random() * s.texts.length)];
+  typewrite(text);
+
+  // Flash
+  if (name === 'acting') {
+    flashOverlay.style.background = `radial-gradient(circle at center, ${s.color}44, transparent 60%)`;
+    flashOverlay.style.opacity = '1';
+    flashOverlay.style.transition = 'opacity 0.05s';
+    setTimeout(() => {
+      flashOverlay.style.transition = 'opacity 0.6s ease';
+      flashOverlay.style.opacity = '0';
+    }, 80);
+    spawnParticles(s.color);
+  }
+
+  // Update buttons
+  document.querySelectorAll('.btn-state').forEach(b => {
+    b.classList.toggle('active', b.dataset.state === name);
+  });
+
+  // Update orbit ring colors
+  updateOrbits(s.color);
+}
+
+function updateOrbits(color) {
+  document.querySelector('.orbit-1').style.borderTopColor = color;
+}
+
+// Typewriter effect (steps-like, not smooth)
+function typewrite(text) {
+  hudContent.textContent = '';
+  let i = 0;
+  const interval = setInterval(() => {
+    hudContent.textContent += text[i];
+    i++;
+    if (i >= text.length) clearInterval(interval);
+  }, 28);
+}
+
+// Spawn floating particles
+function spawnParticles(color) {
+  const wrap = document.getElementById('orbWrap');
+  const rect = wrap.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top  + rect.height / 2;
+
+  for (let i = 0; i < 18; i++) {
+    const p = document.createElement('div');
+    p.className = 'particle';
+    const size = 3 + Math.random() * 5;
+    p.style.cssText = `
+      width: ${size}px; height: ${size}px;
+      background: ${color};
+      box-shadow: 0 0 ${size*2}px ${color};
+      left: ${cx}px; top: ${cy}px;
+      opacity: 1;
+      transition: none;
+    `;
+    document.body.appendChild(p);
+
+    const angle  = (Math.random() * Math.PI * 2);
+    const dist   = 80 + Math.random() * 180;
+    const tx     = Math.cos(angle) * dist;
+    const ty     = Math.sin(angle) * dist;
+    const dur    = 400 + Math.random() * 600;
+
+    // Frame-stepped movement (on twos feel)
+    const steps  = Math.floor(dur / 80);
+    let   step   = 0;
+    const tick = setInterval(() => {
+      step++;
+      const prog = step / steps;
+      const ease = 1 - Math.pow(1 - prog, 3);
+      p.style.left    = (cx + tx * ease) + 'px';
+      p.style.top     = (cy + ty * ease) + 'px';
+      p.style.opacity = (1 - prog) + '';
+      if (step >= steps) {
+        clearInterval(tick);
+        p.remove();
+      }
+    }, 80);
+  }
+}
+
+// Button handlers
+document.querySelectorAll('.btn-state').forEach(btn => {
+  btn.addEventListener('click', () => setState(btn.dataset.state));
+});
+
+// Idle orb click → cycle states demo
+orb.addEventListener('click', () => {
+  const order = ['idle','listening','thinking','acting'];
+  const next  = order[(order.indexOf(currentState) + 1) % order.length];
+  setState(next);
+});
+
+// Auto-cycle demo
+let autoCycle = null;
+function startAutoCycle() {
+  const order = ['idle','listening','thinking','acting'];
+  let idx = 0;
+  autoCycle = setInterval(() => {
+    idx = (idx + 1) % order.length;
+    setState(order[idx]);
+  }, 3200);
+}
+startAutoCycle();
+
+// Stop auto-cycle on manual interaction
+document.querySelectorAll('.btn-state').forEach(b =>
+  b.addEventListener('click', () => { clearInterval(autoCycle); autoCycle = null; })
+);
+
+// Init
+setState('idle');
+</script>
+</body>
+</html>

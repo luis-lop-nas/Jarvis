@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS — Entity Concept</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --ink: #07070d;
+    --neon-a: #ff2d6b;
+    --neon-b: #00f5d4;
+    --neon-c: #f5c400;
+    --neon-d: #7b2fff;
+    --paper: #f5f0e8;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--ink);
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    font-family: 'Space Mono', monospace;
+    cursor: none;
+  }
+
+  /* Grain */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 1000;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 150px 150px;
+    animation: grain 0.12s steps(1) infinite;
+  }
+  @keyframes grain {
+    0%   { transform: translate(0,0) }
+    25%  { transform: translate(-3px, 2px) }
+    50%  { transform: translate(2px, -3px) }
+    75%  { transform: translate(3px, 1px) }
+    100% { transform: translate(-1px, -2px) }
+  }
+
+  /* Halftone bg */
+  body::after {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(circle, rgba(255,45,107,0.05) 1px, transparent 1px),
+      radial-gradient(circle, rgba(0,245,212,0.03) 1px, transparent 1px);
+    background-size: 28px 28px, 42px 42px;
+    background-position: 0 0, 14px 14px;
+  }
+
+  canvas {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  /* UI overlay */
+  .ui {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    padding-bottom: 40px;
+    gap: 20px;
+  }
+
+  /* HUD panel */
+  .hud {
+    pointer-events: all;
+    width: 440px;
+    background: rgba(7,7,13,0.9);
+    border: 1.5px solid rgba(0,245,212,0.4);
+    padding: 14px 18px;
+    position: relative;
+  }
+  .hud::before {
+    content: '◈ JARVIS';
+    display: block;
+    color: var(--neon-b);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 11px;
+    letter-spacing: 4px;
+    margin-bottom: 6px;
+  }
+  .hud-msg {
+    color: rgba(245,240,232,0.85);
+    font-size: 11px;
+    line-height: 1.7;
+    min-height: 20px;
+  }
+  .hud-cursor {
+    display: inline-block;
+    width: 7px; height: 11px;
+    background: var(--neon-b);
+    margin-left: 2px;
+    animation: blink 0.65s steps(1) infinite;
+    vertical-align: middle;
+  }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+
+  .corner { position: absolute; width: 8px; height: 8px; border-color: rgba(255,45,107,0.6); border-style: solid; }
+  .tl { top:-1px; left:-1px; border-width: 1.5px 0 0 1.5px; }
+  .tr { top:-1px; right:-1px; border-width: 1.5px 1.5px 0 0; }
+  .bl { bottom:-1px; left:-1px; border-width: 0 0 1.5px 1.5px; }
+  .br { bottom:-1px; right:-1px; border-width: 0 1.5px 1.5px 0; }
+
+  /* State buttons */
+  .controls {
+    display: flex;
+    gap: 10px;
+    pointer-events: all;
+  }
+  .btn {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 12px;
+    letter-spacing: 2px;
+    padding: 7px 16px;
+    background: transparent;
+    border: 1.5px solid rgba(245,240,232,0.15);
+    color: rgba(245,240,232,0.4);
+    cursor: pointer;
+    transition: all 0.1s steps(2);
+  }
+  .btn:hover, .btn.active {
+    border-color: var(--neon-b);
+    color: var(--neon-b);
+    text-shadow: 0 0 8px var(--neon-b);
+  }
+  .btn.active { background: rgba(0,245,212,0.06); }
+
+  /* App targets */
+  .targets {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 15;
+    display: flex;
+    justify-content: space-around;
+    padding: 32px 60px;
+    pointer-events: all;
+  }
+  .app-target {
+    width: 64px; height: 64px;
+    border: 1.5px solid rgba(245,240,232,0.1);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px;
+    cursor: pointer;
+    position: relative;
+    transition: border-color 0.2s;
+    user-select: none;
+  }
+  .app-target:hover { border-color: rgba(0,245,212,0.4); }
+  .app-target .app-label {
+    position: absolute;
+    bottom: -20px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 8px;
+    letter-spacing: 2px;
+    color: rgba(245,240,232,0.3);
+    white-space: nowrap;
+    font-family: 'Bebas Neue', sans-serif;
+  }
+
+  /* Window target */
+  .window-target {
+    position: fixed;
+    top: 120px; left: 50%;
+    transform: translateX(-50%);
+    width: 460px; height: 280px;
+    border: 1.5px solid rgba(245,240,232,0.06);
+    background: rgba(245,240,232,0.02);
+    z-index: 12;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .window-target.visible { display: flex; }
+  .window-titlebar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 28px;
+    background: rgba(245,240,232,0.04);
+    border-bottom: 1px solid rgba(245,240,232,0.06);
+    display: flex; align-items: center;
+    padding: 0 12px;
+    gap: 6px;
+  }
+  .wdot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: rgba(245,240,232,0.1);
+  }
+  .window-content {
+    color: rgba(245,240,232,0.12);
+    font-size: 10px;
+    letter-spacing: 2px;
+    margin-top: 28px;
+  }
+
+  /* Cursor */
+  .cursor { position: fixed; width: 10px; height: 10px; background: var(--neon-b); border-radius: 50%; pointer-events: none; z-index: 9999; transform: translate(-50%,-50%); mix-blend-mode: exclusion; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<!-- App targets top -->
+<div class="targets">
+  <div class="app-target" data-app="spotify" onclick="launchToApp(this)">
+    🎵
+    <span class="app-label">SPOTIFY</span>
+  </div>
+  <div class="app-target" data-app="safari" onclick="launchToApp(this)">
+    🌐
+    <span class="app-label">SAFARI</span>
+  </div>
+  <div class="app-target" data-app="vscode" onclick="launchToApp(this)">
+    💻
+    <span class="app-label">VS CODE</span>
+  </div>
+  <div class="app-target" data-app="mail" onclick="launchToApp(this)">
+    ✉️
+    <span class="app-label">MAIL</span>
+  </div>
+</div>
+
+<!-- Window mock -->
+<div class="window-target" id="windowTarget">
+  <div class="window-titlebar">
+    <div class="wdot"></div><div class="wdot"></div><div class="wdot"></div>
+  </div>
+  <div class="window-content">VENTANA ACTIVA</div>
+</div>
+
+<!-- UI bottom -->
+<div class="ui">
+  <div class="controls">
+    <button class="btn active" onclick="setMode('idle')">Idle</button>
+    <button class="btn" onclick="setMode('listening')">Escuchando</button>
+    <button class="btn" onclick="setMode('thinking')">Pensando</button>
+    <button class="btn" onclick="triggerWindow()">Control ventana</button>
+  </div>
+  <div class="hud">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="hud-msg" id="hudMsg">Entidad activa. Toca una app o cambia estado.<span class="hud-cursor"></span></div>
+  </div>
+</div>
+
+<div class="cursor" id="cursor"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// CURSOR
+// ─────────────────────────────────────────────
+const cur = document.getElementById('cursor');
+let mx = window.innerWidth/2, my = window.innerHeight/2;
+document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+
+// ─────────────────────────────────────────────
+// CANVAS SETUP
+// ─────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W = canvas.width  = window.innerWidth;
+let H = canvas.height = window.innerHeight;
+window.addEventListener('resize', () => {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+});
+
+// ─────────────────────────────────────────────
+// COLOR PALETTES per state
+// ─────────────────────────────────────────────
+const PALETTES = {
+  idle:      ['#00f5d4','#00c9ae','#00f5d480','#7b2fff','#ffffff30'],
+  listening: ['#00ff88','#00ff88cc','#00ffa060','#00f5d4','#ffffff40'],
+  thinking:  ['#f5c400','#ff8c00','#f5c40080','#ff2d6b80','#ffffff30'],
+  acting:    ['#ff2d6b','#ff2d6bcc','#7b2fff','#f5c40080','#ffffff50'],
+};
+const MSGS = {
+  idle:      'Entidad en reposo. Observando.',
+  listening: 'Escuchando... habla.',
+  thinking:  'Procesando. Consultando contexto.',
+  acting:    'Ejecutando acción del sistema.',
+};
+
+// ─────────────────────────────────────────────
+// PARTICLE CLASS
+// ─────────────────────────────────────────────
+class Particle {
+  constructor(x, y, palette) {
+    this.reset(x, y, palette);
+    // start scattered
+    this.x = x + (Math.random()-0.5)*80;
+    this.y = y + (Math.random()-0.5)*80;
+    this.age = Math.random() * 200;
+  }
+
+  reset(cx, cy, palette) {
+    this.cx = cx; this.cy = cy;
+    this.palette = palette;
+    this.color = palette[Math.floor(Math.random()*palette.length)];
+    // orbital params
+    this.orbitR  = 18 + Math.random() * 55;
+    this.orbitA  = Math.random() * Math.PI * 2;
+    this.orbitSpd= (0.008 + Math.random()*0.018) * (Math.random()<0.5?1:-1);
+    this.orbitTilt = (Math.random()-0.5)*0.7; // elliptical
+    // size & life
+    this.size    = 1.5 + Math.random() * 4;
+    this.baseSize= this.size;
+    this.opacity = 0.4 + Math.random()*0.6;
+    this.age     = 0;
+    this.life    = 180 + Math.random() * 300;
+    // frame stepping (on-twos feel)
+    this.frameAcc = 0;
+    this.frameStep = 2 + Math.floor(Math.random()*2); // update every 2-3 frames
+    // trail
+    this.trail = [];
+    this.maxTrail = 4 + Math.floor(Math.random()*6);
+    // glyph chance
+    this.isGlyph = Math.random() < 0.08;
+    this.glyph   = ['◆','◇','✦','◉','▸','◌','✕','○'][Math.floor(Math.random()*8)];
+    // current position
+    this.x = cx; this.y = cy;
+    // mode
+    this.mode = 'orbit'; // 'orbit' | 'travel' | 'wrap'
+    // target (travel/wrap)
+    this.tx = cx; this.ty = cy;
+    this.wrapPoints = null;
+    this.wrapIndex  = 0;
+    this.wrapT      = 0;
+    this.travelT    = 0;
+    this.startX     = cx; this.startY = cy;
+  }
+
+  updateOrbit() {
+    this.frameAcc++;
+    if (this.frameAcc < this.frameStep) return;
+    this.frameAcc = 0;
+
+    this.orbitA += this.orbitSpd * this.frameStep;
+    this.age++;
+
+    // compute orbit pos
+    const ox = Math.cos(this.orbitA) * this.orbitR;
+    const oy = Math.sin(this.orbitA) * this.orbitR * (0.4 + Math.abs(this.orbitTilt));
+    this.x = this.cx + ox + Math.sin(this.orbitA*2.3)*8;
+    this.y = this.cy + oy;
+
+    // trail
+    this.trail.push({x:this.x, y:this.y});
+    if (this.trail.length > this.maxTrail) this.trail.shift();
+
+    // size breathe
+    this.size = this.baseSize * (0.8 + 0.4*Math.sin(this.age*0.05));
+
+    // respawn
+    if (this.age > this.life) {
+      this.orbitR   = 18 + Math.random()*55;
+      this.orbitSpd = (0.008+Math.random()*0.018)*(Math.random()<0.5?1:-1);
+      this.color    = this.palette[Math.floor(Math.random()*this.palette.length)];
+      this.age      = 0;
+      this.life     = 180 + Math.random()*300;
+      this.trail    = [];
+    }
+  }
+
+  // Travel toward a target point (bezier-like stepping)
+  updateTravel() {
+    this.travelT += 0.04;
+    const t = Math.min(this.travelT, 1);
+    const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
+
+    // mid-point arc
+    const midX = (this.startX + this.tx)*0.5 + (Math.random()-0.5)*30;
+    const midY = (this.startY + this.ty)*0.5 - 60 - Math.random()*40;
+
+    // quadratic bezier
+    const q = 1-ease;
+    this.x = q*q*this.startX + 2*q*ease*midX + ease*ease*this.tx;
+    this.y = q*q*this.startY + 2*q*ease*midY + ease*ease*this.ty;
+
+    this.trail.push({x:this.x, y:this.y});
+    if (this.trail.length > this.maxTrail) this.trail.shift();
+
+    this.size = this.baseSize * (1 + (1-ease)*1.5);
+
+    if (t >= 1) {
+      this.mode = 'wrap';
+      this.wrapT = 0;
+      this.wrapIndex = 0;
+    }
+  }
+
+  // Wrap around target border
+  updateWrap() {
+    if (!this.wrapPoints || this.wrapPoints.length === 0) return;
+    this.wrapT += 0.025 + Math.random()*0.01;
+    const totalPts = this.wrapPoints.length;
+    const idx = Math.floor(this.wrapT * totalPts) % totalPts;
+    const pt  = this.wrapPoints[idx];
+    if (!pt) return;
+
+    // Hover around the wrap point with slight jitter
+    this.x = pt.x + (Math.random()-0.5)*6;
+    this.y = pt.y + (Math.random()-0.5)*6;
+
+    this.trail.push({x:this.x, y:this.y});
+    if (this.trail.length > this.maxTrail) this.trail.shift();
+
+    // Pulsing size on wrap
+    this.size = this.baseSize * (0.7 + 0.6*Math.sin(this.wrapT*8));
+
+    if (this.wrapT > 1.8) {
+      // Return to orbit
+      this.mode = 'orbit';
+      this.trail = [];
+      this.orbitA = Math.random()*Math.PI*2;
+    }
+  }
+
+  draw(ctx) {
+    const alpha = this.opacity * (this.age < 20 ? this.age/20 : this.age > this.life-20 ? (this.life-this.age)/20 : 1);
+
+    // Draw trail
+    for (let i = 0; i < this.trail.length - 1; i++) {
+      const t0 = this.trail[i], t1 = this.trail[i+1];
+      const tAlpha = (i / this.trail.length) * alpha * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(t0.x, t0.y);
+      ctx.lineTo(t1.x, t1.y);
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = tAlpha;
+      ctx.lineWidth   = this.size * 0.4 * (i/this.trail.length);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = alpha;
+
+    if (this.isGlyph && this.size > 2) {
+      // Comic glyph
+      ctx.font = `${Math.floor(this.size*2.5)}px 'Space Mono'`;
+      ctx.fillStyle = this.color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // chromatic split
+      ctx.globalAlpha = alpha * 0.4;
+      ctx.fillStyle = '#ff2d6b';
+      ctx.fillText(this.glyph, this.x-1.5, this.y);
+      ctx.fillStyle = '#00f5d4';
+      ctx.fillText(this.glyph, this.x+1.5, this.y);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = this.color;
+      ctx.fillText(this.glyph, this.x, this.y);
+    } else {
+      // Dot with glow
+      ctx.shadowBlur  = this.size * 4;
+      ctx.shadowColor = this.color;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+
+      // hard ink outline (comic feel)
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size*0.4, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(7,7,13,0.6)';
+      ctx.fill();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur  = 0;
+  }
+
+  update() {
+    if      (this.mode === 'orbit')  this.updateOrbit();
+    else if (this.mode === 'travel') this.updateTravel();
+    else if (this.mode === 'wrap')   this.updateWrap();
+  }
+}
+
+// ─────────────────────────────────────────────
+// ENTITY
+// ─────────────────────────────────────────────
+const N_PARTICLES = 70;
+let entity = {
+  x: W/2, y: H/2 - 40,
+  palette: PALETTES.idle,
+  particles: [],
+  mode: 'idle',
+  frame: 0,
+};
+
+function initParticles() {
+  entity.particles = [];
+  for (let i = 0; i < N_PARTICLES; i++) {
+    entity.particles.push(new Particle(entity.x, entity.y, entity.palette));
+  }
+}
+initParticles();
+
+// ─────────────────────────────────────────────
+// CORE pulse glow (drawn behind particles)
+// ─────────────────────────────────────────────
+function drawCore() {
+  const r  = 28 + 6*Math.sin(entity.frame*0.04);
+  const cr = entity.palette[0];
+
+  // Halftone dot cluster at center
+  const dotCount = 24;
+  for (let i = 0; i < dotCount; i++) {
+    const angle = (i/dotCount)*Math.PI*2 + entity.frame*0.008;
+    const dist  = 8 + 14*Math.sin(i*0.8 + entity.frame*0.03);
+    const dx    = entity.x + Math.cos(angle)*dist;
+    const dy    = entity.y + Math.sin(angle)*dist*0.6;
+    const ds    = 1.5 + 1.5*Math.sin(i*1.3);
+    ctx.beginPath();
+    ctx.arc(dx, dy, ds, 0, Math.PI*2);
+    ctx.fillStyle = cr;
+    ctx.globalAlpha = 0.5 + 0.5*Math.sin(entity.frame*0.06+i);
+    ctx.fill();
+  }
+
+  // Central glow
+  ctx.globalAlpha = 1;
+  const grad = ctx.createRadialGradient(entity.x, entity.y, 0, entity.x, entity.y, r*2);
+  grad.addColorStop(0, cr + 'cc');
+  grad.addColorStop(0.4, cr + '44');
+  grad.addColorStop(1,   'transparent');
+  ctx.beginPath();
+  ctx.arc(entity.x, entity.y, r*2, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Ink ring (comic border)
+  ctx.beginPath();
+  ctx.arc(entity.x, entity.y, r, 0, Math.PI*2);
+  ctx.strokeStyle = cr;
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth   = 2;
+  ctx.setLineDash([4, 6]);
+  ctx.lineDashOffset = -entity.frame * 0.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  // Speed lines radiating (on-twos: only every 3 frames)
+  if (entity.frame % 3 === 0) {
+    const lineCount = 8;
+    for (let i = 0; i < lineCount; i++) {
+      const a = (i/lineCount)*Math.PI*2 + entity.frame*0.015;
+      const inner = r + 8;
+      const outer = r + 16 + Math.random()*14;
+      ctx.beginPath();
+      ctx.moveTo(entity.x + Math.cos(a)*inner, entity.y + Math.sin(a)*inner);
+      ctx.lineTo(entity.x + Math.cos(a)*outer, entity.y + Math.sin(a)*outer);
+      ctx.strokeStyle = entity.palette[0];
+      ctx.globalAlpha = 0.25 + Math.random()*0.25;
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ─────────────────────────────────────────────
+// WRAP POINTS — border of a rect
+// ─────────────────────────────────────────────
+function getWrapPoints(rect, n=80) {
+  const pts = [];
+  const {left:x, top:y, width:w, height:h} = rect;
+  // top
+  for (let i=0;i<n/4;i++) pts.push({x: x + (i/(n/4))*w,   y: y});
+  // right
+  for (let i=0;i<n/4;i++) pts.push({x: x+w,                y: y + (i/(n/4))*h});
+  // bottom
+  for (let i=0;i<n/4;i++) pts.push({x: x+w - (i/(n/4))*w, y: y+h});
+  // left
+  for (let i=0;i<n/4;i++) pts.push({x: x,                  y: y+h - (i/(n/4))*h});
+  return pts;
+}
+
+// ─────────────────────────────────────────────
+// MODE / STATE
+// ─────────────────────────────────────────────
+let currentMode = 'idle';
+let windowVisible = false;
+
+function setMode(mode) {
+  currentMode = mode;
+  entity.palette = PALETTES[mode];
+  entity.particles.forEach(p => {
+    p.palette = entity.palette;
+    p.color   = entity.palette[Math.floor(Math.random()*entity.palette.length)];
+    p.mode    = 'orbit';
+    p.trail   = [];
+    p.age     = 0;
+  });
+  document.querySelectorAll('.btn').forEach(b =>
+    b.classList.toggle('active', b.textContent.toLowerCase().includes(mode))
+  );
+  typeHUD(MSGS[mode] || '');
+  // Hide window
+  document.getElementById('windowTarget').classList.remove('visible');
+  windowVisible = false;
+}
+
+function launchToApp(el) {
+  const rect = el.getBoundingClientRect();
+  const tx   = rect.left + rect.width/2;
+  const ty   = rect.top  + rect.height/2;
+
+  // Brief "acting" palette
+  entity.palette = PALETTES.acting;
+
+  // Half the particles travel to the app
+  const travelers = Math.floor(N_PARTICLES * 0.65);
+  const shuffled  = [...entity.particles].sort(()=>Math.random()-0.5);
+
+  shuffled.slice(0, travelers).forEach((p, i) => {
+    setTimeout(() => {
+      p.mode    = 'travel';
+      p.startX  = p.x; p.startY = p.y;
+      p.tx = tx + (Math.random()-0.5)*rect.width*0.6;
+      p.ty = ty + (Math.random()-0.5)*rect.height*0.6;
+      p.travelT = 0;
+      p.trail   = [];
+      // After wrap, they return
+    }, i * 18);
+  });
+
+  const appName = el.dataset.app.toUpperCase();
+  typeHUD(`Lanzando ${appName}... la entidad viaja al objetivo.`);
+
+  // Return after 2.8s
+  setTimeout(() => {
+    entity.palette = PALETTES[currentMode];
+    entity.particles.forEach(p => {
+      p.palette = entity.palette;
+      p.color   = entity.palette[Math.floor(Math.random()*entity.palette.length)];
+      if (p.mode !== 'orbit') {
+        p.mode  = 'orbit';
+        p.trail = [];
+      }
+    });
+    typeHUD(MSGS[currentMode]);
+  }, 2800);
+}
+
+function triggerWindow() {
+  const win = document.getElementById('windowTarget');
+  win.classList.toggle('visible');
+  windowVisible = win.classList.contains('visible');
+
+  if (windowVisible) {
+    entity.palette = PALETTES.thinking;
+    const rect = win.getBoundingClientRect();
+    const wrapPts = getWrapPoints(rect, 120);
+
+    entity.particles.forEach((p, i) => {
+      setTimeout(() => {
+        p.mode      = 'travel';
+        p.startX    = p.x; p.startY = p.y;
+        const target = wrapPts[Math.floor(Math.random()*wrapPts.length)];
+        p.tx        = target.x;
+        p.ty        = target.y;
+        p.travelT   = 0;
+        p.trail     = [];
+        p.wrapPoints = wrapPts;
+        p.wrapT      = Math.random()*0.5;
+      }, i * 22);
+    });
+    typeHUD('Control de ventana activo. La entidad rodea el objetivo.');
+    document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+  } else {
+    entity.palette = PALETTES[currentMode];
+    entity.particles.forEach(p => {
+      p.palette = entity.palette;
+      p.color   = entity.palette[Math.floor(Math.random()*entity.palette.length)];
+      p.mode    = 'orbit';
+      p.trail   = [];
+    });
+    typeHUD(MSGS[currentMode]);
+  }
+}
+
+// ─────────────────────────────────────────────
+// HUD typewriter
+// ─────────────────────────────────────────────
+let typeTimer = null;
+function typeHUD(text) {
+  const el = document.getElementById('hudMsg');
+  clearInterval(typeTimer);
+  el.textContent = '';
+  let i = 0;
+  typeTimer = setInterval(() => {
+    el.textContent += text[i];
+    i++;
+    if (i >= text.length) {
+      clearInterval(typeTimer);
+      const cur = document.createElement('span');
+      cur.className = 'hud-cursor';
+      el.appendChild(cur);
+    }
+  }, 22);
+}
+
+// ─────────────────────────────────────────────
+// MAIN LOOP
+// ─────────────────────────────────────────────
+// On-twos rendering: update canvas at ~24fps, render at 60fps
+let lastLogic = 0;
+const LOGIC_INTERVAL = 1000/24;
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+
+  // cursor
+  cur.style.left = mx + 'px';
+  cur.style.top  = my + 'px';
+
+  // Logic update (24fps step feel)
+  if (ts - lastLogic >= LOGIC_INTERVAL) {
+    lastLogic = ts;
+    entity.frame++;
+    entity.particles.forEach(p => p.update());
+  }
+
+  // Render
+  ctx.clearRect(0, 0, W, H);
+  drawCore();
+  entity.particles.forEach(p => p.draw(ctx));
+}
+
+requestAnimationFrame(loop);
+
+// Start HUD
+typeHUD('Entidad activa. Toca una app arriba o cambia el estado.');
+</script>
+</body>
+</html>
+

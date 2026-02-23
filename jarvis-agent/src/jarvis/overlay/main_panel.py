@@ -1,13 +1,17 @@
 """
 main_panel.py
 
-Panel de control liquid glass — esquina inferior derecha.
-Se desliza desde fuera de pantalla (derecha) con ease-out + fade.
+Panel de control dark glass — esquina inferior derecha.
+Estética "cloud entity": fondo oscuro #080810, esquinas biseladas,
+bordes y hover en cyan #00ffe0, tipografía SF Mono.
+
+Se desliza desde fuera de pantalla (derecha) con ease-out quint + fade.
 Thread-safe: toggle() desde cualquier hilo.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import threading
@@ -15,23 +19,37 @@ import objc
 import AppKit
 from typing import Optional, Callable
 
-# NSTrackingArea: MouseEnteredAndExited | ActiveAlways
+# Zona de tracking: MouseEnteredAndExited | ActiveAlways
 _TRACK = 0x01 | 0x80
-_CR    = 26.0   # corner radius global
 
-# Posición en la esquina inferior derecha
-_MARGIN_X = 20   # px desde el borde derecho de la pantalla
-_MARGIN_Y = 40   # px desde el borde inferior (deja espacio al Dock)
+_CUT   = 10.0    # px de bisel (chamfer) en esquinas top-right y bottom-left
+_BG    = (0.030, 0.030, 0.070)    # fondo oscuro
+_CYAN  = (0.000, 1.000, 0.878)    # cyan acento
 
-# Duración de las animaciones (segundos)
+_MARGIN_X = 20
+_MARGIN_Y = 40
 _DUR_SHOW = 0.34
 _DUR_HIDE = 0.22
+
+
+# ── Helper: path biselado ─────────────────────────────────────────────────────
+
+def _chamfer_path(x: float, y: float, w: float, h: float, cut: float = _CUT):
+    """NSBezierPath con esquinas top-right y bottom-left biseladas."""
+    path = AppKit.NSBezierPath.bezierPath()
+    path.moveToPoint_(AppKit.NSMakePoint(x, y + h))
+    path.lineToPoint_(AppKit.NSMakePoint(x + w - cut, y + h))
+    path.lineToPoint_(AppKit.NSMakePoint(x + w, y + h - cut))
+    path.lineToPoint_(AppKit.NSMakePoint(x + w, y))
+    path.lineToPoint_(AppKit.NSMakePoint(x + cut, y))
+    path.lineToPoint_(AppKit.NSMakePoint(x, y + cut))
+    path.closePath()
+    return path
 
 
 # ── Iconos bezier ─────────────────────────────────────────────────────────────
 
 def _icon_quit(cx: float, cy: float, alpha: float) -> None:
-    """× delgada."""
     p = AppKit.NSBezierPath.bezierPath()
     p.setLineWidth_(1.4)
     p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
@@ -45,7 +63,6 @@ def _icon_quit(cx: float, cy: float, alpha: float) -> None:
 
 
 def _icon_voice(cx: float, cy: float, alpha: float) -> None:
-    """Waveform de audio: 5 barras verticales de altura variable."""
     p = AppKit.NSBezierPath.bezierPath()
     p.setLineWidth_(1.6)
     p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
@@ -57,95 +74,76 @@ def _icon_voice(cx: float, cy: float, alpha: float) -> None:
 
 
 def _icon_text(cx: float, cy: float, alpha: float) -> None:
-    """Cursor I-beam de texto."""
     p = AppKit.NSBezierPath.bezierPath()
     p.setLineWidth_(1.3)
     p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
     AppKit.NSColor.colorWithRed_green_blue_alpha_(1, 1, 1, alpha).set()
-    # barra vertical
     p.moveToPoint_(AppKit.NSMakePoint(cx,      cy - 5.5))
     p.lineToPoint_(AppKit.NSMakePoint(cx,      cy + 5.5))
-    # serif superior
     p.moveToPoint_(AppKit.NSMakePoint(cx - 3.0, cy + 5.5))
     p.lineToPoint_(AppKit.NSMakePoint(cx + 3.0, cy + 5.5))
-    # serif inferior
     p.moveToPoint_(AppKit.NSMakePoint(cx - 3.0, cy - 5.5))
     p.lineToPoint_(AppKit.NSMakePoint(cx + 3.0, cy - 5.5))
     p.stroke()
 
 
-# ── Highlight especular liquid glass ─────────────────────────────────────────
+# ── Fondo biselado del panel ─────────────────────────────────────────────────
 
-class _GlassOverlay(AppKit.NSView):
-    """
-    Capa que añade el highlight especular característico del liquid glass:
-    un gradiente blanco translúcido en la mitad superior que simula la
-    refracción de la luz en el cristal curvado.
-    """
+class _DarkPanelBg(AppKit.NSView):
+    """Fondo oscuro con esquinas biseladas + borde blanco tenue → cyan al hover."""
 
-    def drawRect_(self, rect) -> None:
-        b = self.bounds()
-        w = b.size.width
-        h = b.size.height
+    def initWithFrame_(self, frame):
+        self = objc.super(_DarkPanelBg, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._hover = False
+        return self
 
-        ctx = AppKit.NSGraphicsContext.currentContext()
-        ctx.saveGraphicsState()
-
-        # Clip al contorno redondeado del panel
-        pill = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            b, _CR, _CR
-        )
-        pill.addClip()
-
-        # Gradiente especular: blanco en el borde superior, transparente a mitad
-        spec = AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.00),
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.20),
-        )
-        spec.drawInRect_angle_(
-            AppKit.NSMakeRect(0, h * 0.42, w, h * 0.58),
-            90.0,
-        )
-
-        ctx.restoreGraphicsState()
-
-    def isOpaque(self) -> bool:
-        return False
-
-    def hitTest_(self, pt):
-        return None
-
-
-# ── Borde exterior ────────────────────────────────────────────────────────────
-
-class _Border(AppKit.NSView):
-    """Borde redondeado translúcido. No captura clics."""
+    @objc.python_method
+    def set_hover(self, val: bool) -> None:
+        if self._hover != val:
+            self._hover = val
+            self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect) -> None:
-        path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            self.bounds(), _CR, _CR
-        )
+        b  = self.bounds()
+        bx = b.origin.x
+        by = b.origin.y
+        bw = b.size.width
+        bh = b.size.height
+
+        path = _chamfer_path(bx, by, bw, bh)
+
+        # Fondo
+        r, g, b_ = _BG
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b_, 0.93).set()
+        path.fill()
+
+        # Borde: blanco tenue → cyan al hover
         path.setLineWidth_(1.0)
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.30).set()
+        if self._hover:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.50).set()
+        else:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
         path.stroke()
 
     def isOpaque(self) -> bool:
         return False
 
     def hitTest_(self, pt):
-        return None
+        return None   # click-through total
 
 
-# ── Botón píldora glass ───────────────────────────────────────────────────────
+# ── Botón dark con esquinas biseladas ────────────────────────────────────────
 
-class _GlassBtn(AppKit.NSView):
-    """Píldora glass con icono bezier, micro-highlight y etiqueta."""
+class _DarkBtn(AppKit.NSView):
+    """Botón píldora oscuro con icono bezier, etiqueta SF Mono y hover cyan."""
 
     def initWithFrame_(self, frame):
-        self = objc.super(_GlassBtn, self).initWithFrame_(frame)
+        self = objc.super(_DarkBtn, self).initWithFrame_(frame)
         if self is None:
             return None
-        self._label:     str                = ""
+        self._label:     str                = ''
         self._draw_icon: Optional[Callable] = None
         self._action:    Optional[Callable] = None
         self._hover:     bool               = False
@@ -158,10 +156,8 @@ class _GlassBtn(AppKit.NSView):
         self._action    = action
         self.setNeedsDisplay_(True)
 
-    # ── Hover ────────────────────────────────────────────────────────────────
-
     def updateTrackingAreas(self) -> None:
-        objc.super(_GlassBtn, self).updateTrackingAreas()
+        objc.super(_DarkBtn, self).updateTrackingAreas()
         for a in list(self.trackingAreas()):
             self.removeTrackingArea_(a)
         self.addTrackingArea_(
@@ -169,6 +165,9 @@ class _GlassBtn(AppKit.NSView):
                 self.bounds(), _TRACK, self, None
             )
         )
+
+    def acceptsFirstMouse_(self, event) -> bool: return True
+    def isOpaque(self)                -> bool:   return False
 
     def mouseEntered_(self, event) -> None:
         self._hover = True
@@ -178,79 +177,203 @@ class _GlassBtn(AppKit.NSView):
         self._hover = False
         self.setNeedsDisplay_(True)
 
+    def mouseDown_(self, event) -> None:
+        pass   # captura para que mouseUp_ llegue aquí
+
     def mouseUp_(self, event) -> None:
         if self._action:
             self._action()
 
-    def isOpaque(self) -> bool:
-        return False
-
-    # ── Dibujo ───────────────────────────────────────────────────────────────
-
     def drawRect_(self, rect) -> None:
         b  = self.bounds()
-        w  = b.size.width
-        h  = b.size.height
-        cr = h / 2   # fully rounded pill
+        bx = b.origin.x
+        by = b.origin.y
+        bw = b.size.width
+        bh = b.size.height
 
-        # ── Fondo glass base
-        pill = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(b, cr, cr)
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, 0.24 if self._hover else 0.10
-        ).set()
-        pill.fill()
+        path = _chamfer_path(bx, by, bw, bh, cut=5.0)
 
-        # ── Micro-highlight glass en mitad superior del botón
-        ctx = AppKit.NSGraphicsContext.currentContext()
-        ctx.saveGraphicsState()
-        pill.addClip()
-        hi = AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1, 1, 1, 0.00),
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1, 1, 1, 0.12 if self._hover else 0.07),
-        )
-        hi.drawInRect_angle_(
-            AppKit.NSMakeRect(0, h * 0.5, w, h * 0.5), 90.0
-        )
-        ctx.restoreGraphicsState()
+        # Fondo
+        if self._hover:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.10).set()
+        else:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.04).set()
+        path.fill()
 
-        # ── Borde
-        pill.setLineWidth_(0.75)
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, 0.40 if self._hover else 0.22
-        ).set()
-        pill.stroke()
+        # Borde
+        path.setLineWidth_(0.8)
+        if self._hover:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.55).set()
+        else:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
+        path.stroke()
 
-        # ── Icono bezier
+        # Icono bezier (centrado horizontalmente, parte superior)
         if self._draw_icon:
-            self._draw_icon(w / 2, h * 0.58, 0.92 if self._hover else 0.72)
+            icon_alpha = 0.90 if self._hover else 0.60
+            self._draw_icon(bw / 2, bh * 0.58, icon_alpha)
 
-        # ── Etiqueta
+        # Etiqueta monospace
+        lbl_font = (
+            AppKit.NSFont.fontWithName_size_('SF Mono', 7.5) or
+            AppKit.NSFont.fontWithName_size_('Menlo', 7.5) or
+            AppKit.NSFont.monospacedSystemFontOfSize_weight_(7.5, AppKit.NSFontWeightBold)
+        )
+        if self._hover:
+            lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.95)
+        else:
+            lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.35)
+
         lbl_a = {
-            AppKit.NSFontAttributeName:
-                AppKit.NSFont.systemFontOfSize_weight_(8.0, AppKit.NSFontWeightMedium),
-            AppKit.NSForegroundColorAttributeName:
-                AppKit.NSColor.colorWithRed_green_blue_alpha_(
-                    1.0, 1.0, 1.0, 0.68 if self._hover else 0.44
-                ),
+            AppKit.NSFontAttributeName: lbl_font,
+            AppKit.NSForegroundColorAttributeName: lbl_color,
         }
         lbl_s = AppKit.NSAttributedString.alloc().initWithString_attributes_(
             self._label, lbl_a
         )
         lsz = lbl_s.size()
         lbl_s.drawAtPoint_(AppKit.NSMakePoint(
-            w / 2 - lsz.width / 2,
-            h * 0.12 - lsz.height / 2,
+            bw / 2 - lsz.width / 2,
+            bh * 0.14,
         ))
 
 
-# ── Animador timer-based ──────────────────────────────────────────────────────
+# ── Botón × cierre ────────────────────────────────────────────────────────────
+
+class _DarkCloseBtn(AppKit.NSView):
+    """Círculo oscuro con × que aparece al hover sobre el panel."""
+
+    SIZE = 19.4
+
+    def initWithFrame_(self, frame):
+        self = objc.super(_DarkCloseBtn, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._action = None
+        self._hover  = False
+        self.setAlphaValue_(0.0)
+        return self
+
+    @objc.python_method
+    def configure(self, action: Callable) -> None:
+        self._action = action
+
+    def updateTrackingAreas(self) -> None:
+        objc.super(_DarkCloseBtn, self).updateTrackingAreas()
+        for a in list(self.trackingAreas()):
+            self.removeTrackingArea_(a)
+        self.addTrackingArea_(
+            AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                self.bounds(), _TRACK, self, None
+            )
+        )
+
+    def acceptsFirstMouse_(self, event) -> bool: return True
+    def isOpaque(self)                -> bool:   return False
+
+    def mouseEntered_(self, event) -> None:
+        self._hover = True
+        self.setNeedsDisplay_(True)
+
+    def mouseExited_(self, event) -> None:
+        self._hover = False
+        self.setNeedsDisplay_(True)
+
+    def mouseDown_(self, event) -> None: pass
+
+    def mouseUp_(self, event) -> None:
+        if self._action:
+            self._action()
+
+    def drawRect_(self, rect) -> None:
+        b  = self.bounds()
+        cx = b.size.width  / 2
+        cy = b.size.height / 2
+
+        circle = AppKit.NSBezierPath.bezierPathWithOvalInRect_(b)
+        # fondo oscuro
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.90).set()
+        circle.fill()
+        # borde
+        circle.setLineWidth_(0.8)
+        if self._hover:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.80).set()
+        else:
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.25).set()
+        circle.stroke()
+
+        # ×
+        p = AppKit.NSBezierPath.bezierPath()
+        p.setLineWidth_(1.2)
+        p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(
+            1, 1, 1, 0.90 if self._hover else 0.50
+        ).set()
+        s = 2.8
+        p.moveToPoint_(AppKit.NSMakePoint(cx - s, cy - s))
+        p.lineToPoint_(AppKit.NSMakePoint(cx + s, cy + s))
+        p.moveToPoint_(AppKit.NSMakePoint(cx + s, cy - s))
+        p.lineToPoint_(AppKit.NSMakePoint(cx - s, cy + s))
+        p.stroke()
+
+
+# ── Detector hover del panel completo ────────────────────────────────────────
+
+class _PanelHoverTracker(AppKit.NSView):
+    """View click-through que detecta entrada/salida del cursor sobre el panel."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(_PanelHoverTracker, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._close_btn = None
+        self._bg        = None
+        return self
+
+    @objc.python_method
+    def configure(self, close_btn, bg) -> None:
+        self._close_btn = close_btn
+        self._bg        = bg
+
+    def updateTrackingAreas(self) -> None:
+        objc.super(_PanelHoverTracker, self).updateTrackingAreas()
+        for a in list(self.trackingAreas()):
+            self.removeTrackingArea_(a)
+        self.addTrackingArea_(
+            AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                self.bounds(), _TRACK, self, None
+            )
+        )
+
+    def mouseEntered_(self, event) -> None:
+        if self._close_btn:
+            AppKit.NSAnimationContext.runAnimationGroup_completionHandler_(
+                lambda ctx: (ctx.setDuration_(0.15),
+                             self._close_btn.animator().setAlphaValue_(1.0)),
+                None,
+            )
+        if self._bg:
+            self._bg.set_hover(True)
+
+    def mouseExited_(self, event) -> None:
+        if self._close_btn:
+            AppKit.NSAnimationContext.runAnimationGroup_completionHandler_(
+                lambda ctx: (ctx.setDuration_(0.10),
+                             self._close_btn.animator().setAlphaValue_(0.0)),
+                None,
+            )
+        if self._bg:
+            self._bg.set_hover(False)
+
+    def isOpaque(self) -> bool: return False
+    def hitTest_(self, pt):     return None
+    def drawRect_(self, rect):  pass
+
+
+# ── Animador ease-out quint ───────────────────────────────────────────────────
 
 class _PanelAnimator(AppKit.NSObject):
-    """
-    Anima la posición X y alpha de un NSPanel a 60 fps.
-    Curva ease-out quint (f(t) = 1 - (1-t)^5) para un deslizamiento
-    rápido al inicio que frena suavemente al llegar al destino.
-    """
+    """Anima posición X y alpha de un NSPanel a 60 fps (ease-out quint)."""
 
     def init(self):
         self = objc.super(_PanelAnimator, self).init()
@@ -270,7 +393,6 @@ class _PanelAnimator(AppKit.NSObject):
     @objc.python_method
     def start(self, panel, from_x: float, to_x: float, y: float,
               duration: float, fade_in: bool, on_done=None) -> None:
-        """Inicia una animación. Siempre llamar desde el hilo principal."""
         self._cancel_timer()
         self._panel    = panel
         self._from_x   = from_x
@@ -282,7 +404,7 @@ class _PanelAnimator(AppKit.NSObject):
         self._on_done  = on_done
 
         self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 60.0, self, "animTick:", None, True
+            1.0 / 60.0, self, 'animTick:', None, True
         )
 
     @objc.python_method
@@ -298,9 +420,9 @@ class _PanelAnimator(AppKit.NSObject):
     def animTick_(self, timer) -> None:
         self._progress = min(1.0, self._progress + self._step)
 
-        # Ease-out quint: frena con elegancia al llegar al destino
+        # ease-out quint: 1 - (1-p)^5
         inv = 1.0 - self._progress
-        t   = 1.0 - inv * inv * inv * inv * inv   # 1 - (1-p)^5
+        t   = 1.0 - inv * inv * inv * inv * inv
 
         x     = self._from_x + (self._to_x - self._from_x) * t
         alpha = t if self._fade_in else (1.0 - t)
@@ -322,9 +444,8 @@ class _PanelAnimator(AppKit.NSObject):
 
 class MainPanel:
     """
-    Panel de control liquid glass — esquina inferior derecha.
-    Entra deslizándose desde la derecha (ease-out quint + fade).
-    Sale deslizándose hacia la derecha (ease-out quint + fade).
+    Panel de control dark glass — esquina inferior derecha.
+    Desliza desde la derecha (ease-out quint + fade).
     Thread-safe: toggle() desde cualquier hilo.
     """
 
@@ -340,16 +461,15 @@ class MainPanel:
         self._visible   = False
         self._animating = False
 
-    # ── Posiciones ───────────────────────────────────────────────────────────
-
     @objc.python_method
     def _positions(self):
-        """Devuelve (final_x, final_y, offscreen_x) según la pantalla principal."""
-        sf          = AppKit.NSScreen.mainScreen().frame()
-        final_x     = sf.size.width - self.WIDTH - _MARGIN_X
-        final_y     = _MARGIN_Y
-        offscreen_x = sf.size.width + 40   # justo fuera del borde derecho
-        return final_x, final_y, offscreen_x
+        CS      = _DarkCloseBtn.SIZE
+        OV      = CS / 2
+        sf      = AppKit.NSScreen.mainScreen().frame()
+        final_x = sf.size.width - self.WIDTH - _MARGIN_X - OV
+        final_y = _MARGIN_Y
+        off_x   = sf.size.width + 40
+        return final_x, final_y, off_x
 
     # ── API pública ───────────────────────────────────────────────────────────
 
@@ -373,14 +493,12 @@ class MainPanel:
         if self._panel is None:
             self._build()
 
-        # Debounce: ignorar clicks mientras ya se está animando
         if self._animating:
             return
 
         final_x, final_y, offscreen_x = self._positions()
 
         if self._visible:
-            # ── Ocultar: deslizar hacia la derecha ───────────────────────────
             self._visible   = False
             self._animating = True
             self._animator.start(
@@ -393,7 +511,6 @@ class MainPanel:
                 on_done  = self._on_hide_done,
             )
         else:
-            # ── Mostrar: aparecer desde la derecha ───────────────────────────
             self._visible   = True
             self._animating = True
             self._panel.setAlphaValue_(0.0)
@@ -419,7 +536,6 @@ class MainPanel:
         self._animating = False
 
     def _hide(self) -> None:
-        """Ocultar inmediato (botones del panel). No animar para no robar el foco."""
         if self._animator:
             self._animator.cancel()
         if self._panel:
@@ -428,12 +544,15 @@ class MainPanel:
         self._animating = False
 
     def _build(self) -> None:
-        # ── Animador (siempre en hilo principal) ─────────────────────────────
         self._animator = _PanelAnimator.alloc().init()
 
-        # ── NSPanel borderless ────────────────────────────────────────────────
+        CS      = _DarkCloseBtn.SIZE
+        OV      = CS / 2
+        panel_w = self.WIDTH  + OV
+        panel_h = self.HEIGHT + OV
+
         self._panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            AppKit.NSMakeRect(0, 0, self.WIDTH, self.HEIGHT),
+            AppKit.NSMakeRect(0, 0, panel_w, panel_h),
             AppKit.NSWindowStyleMaskBorderless,
             AppKit.NSBackingStoreBuffered,
             False,
@@ -450,74 +569,68 @@ class MainPanel:
             | AppKit.NSWindowCollectionBehaviorIgnoresCycle
         )
 
-        # ── NSVisualEffectView — dark frosted glass ────────────────────────────
-        vfx = AppKit.NSVisualEffectView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.WIDTH, self.HEIGHT)
+        # Content wrapper
+        content = AppKit.NSView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, panel_w, panel_h)
         )
-        vfx.setMaterial_(13)    # NSVisualEffectMaterialHUDWindow
-        vfx.setBlendingMode_(0) # NSVisualEffectBlendingModeBehindWindow
-        vfx.setState_(1)        # NSVisualEffectStateActive
-        self._panel.setContentView_(vfx)
+        self._panel.setContentView_(content)
 
-        # Esquinas redondeadas (DESPUÉS de setContentView_)
-        vfx.setWantsLayer_(True)
-        vfx.layer().setCornerRadius_(_CR)
-        vfx.layer().setMasksToBounds_(True)
-
-        # ── Capas en orden (de fondo a frente) ───────────────────────────────
-
-        # 1. Highlight especular liquid glass
-        overlay = _GlassOverlay.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.WIDTH, self.HEIGHT)
+        # Fondo biselado oscuro (desplazado OV para dejar espacio al botón ×)
+        bg = _DarkPanelBg.alloc().initWithFrame_(
+            AppKit.NSMakeRect(OV, 0, self.WIDTH, self.HEIGHT)
         )
-        vfx.addSubview_(overlay)
+        content.addSubview_(bg)
 
-        # 2. Botones píldora
+        # Botones
         PAD   = 12
         GAP   = 8
         BTN_W = (self.WIDTH - 2 * PAD - 2 * GAP) / 3
         BTN_H = self.HEIGHT - 2 * PAD
 
         configs = [
-            ("Quit",  _icon_quit,  self._action_quit),
-            ("Voice", _icon_voice, self._action_voice),
-            ("Type",  _icon_text,  self._action_text),
+            ('QUIT',  _icon_quit,  self._action_quit),
+            ('VOICE', _icon_voice, self._action_voice),
+            ('TYPE',  _icon_text,  self._action_text),
         ]
         for i, (lbl, icon_fn, act) in enumerate(configs):
             bx  = PAD + i * (BTN_W + GAP)
-            btn = _GlassBtn.alloc().initWithFrame_(
+            btn = _DarkBtn.alloc().initWithFrame_(
                 AppKit.NSMakeRect(bx, PAD, BTN_W, BTN_H)
             )
             btn.configure(lbl, icon_fn, act)
-            vfx.addSubview_(btn)
+            bg.addSubview_(btn)
 
-        # 3. Borde exterior (siempre encima)
-        border = _Border.alloc().initWithFrame_(
+        # Tracker hover (detecta entrada/salida del panel completo)
+        tracker = _PanelHoverTracker.alloc().initWithFrame_(
             AppKit.NSMakeRect(0, 0, self.WIDTH, self.HEIGHT)
         )
-        vfx.addSubview_(border)
+        bg.addSubview_(tracker)
+
+        # Botón × (sobresale por la esquina superior-izquierda del panel)
+        K = _CUT * (1.0 - 1.0 / math.sqrt(2.0))
+        close_btn = _DarkCloseBtn.alloc().initWithFrame_(
+            AppKit.NSMakeRect(K, self.HEIGHT - K - CS / 2, CS, CS)
+        )
+        close_btn.configure(self._action_close)
+        content.addSubview_(close_btn)
+
+        tracker.configure(close_btn, bg)
 
     # ── Acciones ──────────────────────────────────────────────────────────────
+
+    def _action_close(self) -> None:
+        self._hide()
 
     def _action_quit(self) -> None:
         os.kill(os.getpid(), signal.SIGKILL)
 
     def _action_voice(self) -> None:
-        """Graba voz. trigger_voice_input es non-blocking → no hace falta thread."""
         self._hide()
         self._daemon.trigger_voice_input()
 
     def _action_text(self) -> None:
-        """
-        Muestra el popup de texto DIRECTAMENTE en el hilo principal.
-
-        Llamar _show() desde el handler del click (gesto de usuario) garantiza
-        que macOS 14+ permita asignar el foco al campo de texto.
-        Después, notificamos al daemon para que espere el resultado.
-        """
         popup = self._daemon._text_popup
-        # Señal para que show_and_wait() omita la llamada al bridge
         popup._already_shown = True
         self._hide()
-        popup._show()                        # foco garantizado: contexto de gesto
-        self._daemon.trigger_text_input()    # daemon espera el resultado (non-blocking)
+        popup._show()
+        self._daemon.trigger_text_input()

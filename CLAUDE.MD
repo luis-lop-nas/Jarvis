@@ -24,6 +24,9 @@ JARVIS (Just A Rather Very Intelligent System) es un asistente de IA con overlay
    - Drag del orb con el ratón a cualquier posición
    - Popup de texto con `Ctrl+Space` (alternativa a voz)
    - Icono `◉ J` en la barra de menú con toggle Silenciar y Autostart
+   - **HUD de subtítulos** (`hud.py`) — panel centrado en parte inferior con la respuesta completa
+   - **Panel de chat** (`chat_panel.py`) — historial scrollable + campo de texto
+   - **Panel de control** (`main_panel.py`) — liquid glass en esquina inferior derecha (Quit / Voice / Type)
 
 2. **Backend (Python)**
    - FastAPI para servidor web (modo `--web`)
@@ -63,7 +66,7 @@ jarvis-agent/
         │   ├── runner.py        # AgentConfig (base dataclass)
         │   ├── state.py         # AgentState + truncate_history
         │   ├── tool_agent.py    # Motor principal: Claude/Gemini/Groq/Ollama
-        │   └── prompts.py       # SYSTEM_PROMPT
+        │   └── prompts.py       # SYSTEM_PROMPT + SYSTEM_PROMPT_GROQ
         ├── knowledge/
         │   └── knowledge_base.py  # RAG con ChromaDB + sentence-transformers
         ├── memory/
@@ -76,6 +79,9 @@ jarvis-agent/
         │   ├── bridge.py        # IPC thread-safe daemon ↔ overlay
         │   ├── dock.py          # Posición exacta de iconos del Dock (AX API)
         │   ├── daemon.py        # Voz/texto + LLM + tools + hooks visuales
+        │   ├── hud.py           # HUD flotante de subtítulos (respuesta completa)
+        │   ├── chat_panel.py    # Panel de chat con historial scrollable
+        │   ├── main_panel.py    # Panel liquid glass (Quit/Voice/Type)
         │   ├── menubar.py       # Icono ◉ J en barra de menú
         │   └── text_input.py    # Popup texto (hotkey Ctrl+Space)
         ├── tools/
@@ -173,17 +179,20 @@ El daemon corre en background. Se comunica con el overlay vía `OverlayBridge` (
 
 ```
 Wake word ("Hey Jarvis")   →  orb verde    → graba con VAD
-   o Ctrl+Space            →  orb verde    → popup de texto
+   o Ctrl+Space / botón    →  orb verde    → popup de texto / panel de chat
 
-Transcripción / texto      →  orb naranja  → LLM procesa
+Transcripción / texto      →  orb naranja  → LLM procesa con contexto automático
+                                              (hora + app activa + portapapeles)
                                               (órbitas girando)
 
 Tool visual (open_app...)  →  orb azul     → 30 partículas
                                               vuelan al Dock
                                               → se ejecuta la tool
 
-TTS respuesta              →  orb azul     → Jarvis habla
-Fin                        →  orb azul     → idle
+TTS respuesta              →  orb azul     → Jarvis habla (respuesta completa)
+                                              HUD muestra el texto 3.5s
+Fin (sin seguimiento)      →  orb azul     → idle
+  o seguimiento (6s)       →  orb verde    → escucha sin wake word
 ```
 
 ### Clases clave del overlay
@@ -195,7 +204,11 @@ Fin                        →  orb azul     → idle
 | `ParticleSystem` | `particles.py` | Vuelos de partículas bezier (`fly_to`) |
 | `OverlayBridge` | `bridge.py` | Cola IPC + `run_on_main_thread()` |
 | `VisualRegistry` | `daemon.py` | ToolRegistry que intercepta tools para lanzar `fly_to` |
-| `JarvisDaemon` | `daemon.py` | Wake word / hotkey / VAD / STT / LLM / TTS |
+| `JarvisDaemon` | `daemon.py` | Wake word / hotkey / VAD / STT / LLM / TTS / follow-up |
+| `_ClipboardMonitor` | `daemon.py` | Monitoriza portapapeles (1s poll, máx 250 chars) |
+| `JarvisHUD` | `hud.py` | Panel subtítulos centrado, fade-out 3.5s, click-through |
+| `ChatPanel` | `chat_panel.py` | Historial scrollable + campo de texto; toggle desde menú |
+| `MainPanel` | `main_panel.py` | Panel liquid glass esquina inferior derecha (Quit/Voice/Type) |
 | `MenuBar` | `menubar.py` | Icono ◉ J, toggle Silenciar, toggle Autostart |
 | `TextInputPopup` | `text_input.py` | Popup texto para hotkey Ctrl+Space |
 
@@ -207,6 +220,53 @@ Fin                        →  orb azul     → idle
 | `listening` | Verde `(0, 0.95, 0.5)` | Pulso rápido + anillo |
 | `thinking` | Naranja `(1, 0.6, 0)` | Anillo + 2 órbitas contra-rotantes |
 | `acting` | Azul brillante `(0, 0.85, 1)` | Órbitas + partículas fly_to |
+
+### Panel de control — MainPanel (`main_panel.py`)
+
+Panel liquid glass (NSVisualEffectView material HUD) en la esquina inferior derecha.
+Entra deslizándose desde fuera de pantalla con ease-out quint + fade en 340ms.
+Tres botones píldora con icono bezier y etiqueta:
+
+| Botón | Icono | Acción |
+|-------|-------|--------|
+| **Quit** | × | `os.kill(pid, SIGKILL)` |
+| **Voice** | waveform 5 barras | `daemon.trigger_voice_input()` |
+| **Type** | cursor I-beam | Popup de texto (garantía de foco en gesto) |
+
+Botón × circular aparece al hover sobre el panel glass (fade 0→1 en 150ms).
+
+### HUD de subtítulos — JarvisHUD (`hud.py`)
+
+- Fondo oscuro `(0.03, 0.03, 0.09, 0.91)` con borde azul eléctrico `(0, 0.71, 1, 0.5)`
+- Texto 15pt Light, hasta 6 líneas con word wrap; ancho fijo 600px centrado
+- Icono `◈` identificador de Jarvis en azul
+- Click-through (`setIgnoresMouseEvents_(True)`)
+- Fade-out automático 3.5s tras fin del TTS (`schedule_hide()`)
+- Oculto inmediatamente si hay interrupción (`hide()`)
+
+### Panel de chat — ChatPanel (`chat_panel.py`)
+
+- Historial scrollable de mensajes usuario/Jarvis con estética oscura + borde azul
+- Campo de texto en parte inferior; Enter para enviar
+- Draggable desde cualquier zona libre
+- Toggle desde menú `◉ J`
+- Thread-safe: `add_user_message()` / `add_jarvis_message()` desde cualquier thread
+
+### Contexto automático en peticiones
+
+Cada petición al LLM inyecta automáticamente:
+- **Hora actual** (`datetime.now().strftime('%H:%M')`)
+- **App activa** y título de ventana (Accessibility API)
+- **URL** si el navegador tiene una página abierta
+- **Portapapeles** (si hay >5 chars, primeros 200 chars)
+
+Formato: `[Sistema: hora: 14:30 | app activa: Safari | URL: ... | portapapeles: «...»]`
+
+### Conversación continua (follow-up)
+
+Tras responder, el daemon escucha 6s sin requerir wake word (`_try_followup`).
+Si el usuario habla → nuevo turno de conversación.
+Si no hay voz → vuelve a idle silenciosamente.
 
 ### Detección de posición del Dock (`dock.py`)
 
@@ -225,6 +285,18 @@ Instala un LaunchAgent en `~/Library/LaunchAgents/com.jarvis.desktop.plist`. Act
 - Schemas de tools cacheados en `__init__` (`_cached_claude_tools`, etc.)
 - Historial truncado a 20 mensajes (`truncate_history`)
 - En modo desktop, `VisualRegistry` intercepta `open_app`, `shell`, `code_assistant`, `organize_files` para lanzar `fly_to` antes de ejecutar
+- **Dos prompts:** `SYSTEM_PROMPT` (Claude/Gemini/Ollama) y `SYSTEM_PROMPT_GROQ` (compacto, evita confundir el function calling de llama)
+
+### Limpieza de texto para TTS (`_clean_for_speech`)
+
+Antes de hablar, el daemon filtra:
+- Bloques de código (` ``` `) e inline code
+- Tags `<function=...>`
+- Markdown (negritas, listas, headers)
+- Frases de estado ("Enseguida, señor.", "Buscando...", "Procesando...")
+- Saltos de línea → espacios
+
+El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) para evitar pausas.
 
 ## 🛠️ Herramientas Disponibles (17)
 
@@ -268,6 +340,7 @@ Instala un LaunchAgent en `~/Library/LaunchAgents/com.jarvis.desktop.plist`. Act
 - **Thread model**: NSApplication en hilo principal; daemon en thread secundario; bridge sincroniza con NSTimer cada 50ms
 - **PyObjC**: usar `objc.super(Cls, self).method_()` en subclases ObjC (no `super()`)
 - **AXValueGetValue**: devuelve `(bool, CGPoint/CGSize)` — completamente bridgeado en pyobjc-framework-ApplicationServices
+- **MainPanel foco de texto**: `popup._show()` se llama desde el handler del click (contexto de gesto) para garantizar permiso de macOS 14+ de asignar foco al campo
 
 ## 🐛 Debugging
 
@@ -303,4 +376,4 @@ tail -f /tmp/jarvis.err
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 2.0.0
+**Versión**: 2.1.0

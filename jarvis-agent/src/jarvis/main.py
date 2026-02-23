@@ -180,6 +180,9 @@ def _run_desktop(settings, paths) -> None:
     daemon = JarvisDaemon(bridge, sw, sh, settings, paths)
     daemon.start()
 
+    # Conectar HUD al view para sincronizar color de borde con el estado
+    view.set_hud(daemon._hud)
+
     # ── Barra de menú ─────────────────────────────────────────────────────────
     _menubar = MenuBar(daemon)
 

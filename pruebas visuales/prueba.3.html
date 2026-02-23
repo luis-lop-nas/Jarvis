@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS — Entity v3</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+  :root {
+    --ink: #06060c;
+    --c1: #00ffe0;
+    --c2: #ff2060;
+    --c3: #ffe100;
+    --c4: #8b00ff;
+    --paper: #f0ebe0;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--ink);
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    font-family: 'Space Mono', monospace;
+    cursor: none;
+  }
+
+  /* Grain layer */
+  #grain {
+    position: fixed; inset: 0; z-index: 900; pointer-events: none;
+    opacity: 0.055;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 120px;
+    animation: g .1s steps(1) infinite;
+  }
+  @keyframes g {
+    0%  {transform:translate(0,0)}
+    25% {transform:translate(-3px,2px)}
+    50% {transform:translate(2px,-3px)}
+    75% {transform:translate(3px,1px)}
+  }
+
+  /* Scanlines */
+  #scan {
+    position: fixed; inset: 0; z-index: 901; pointer-events: none;
+    background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px);
+  }
+
+  canvas { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+
+  /* ── App icons ── */
+  .apps {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    padding: 28px 0;
+    z-index: 50;
+    pointer-events: all;
+  }
+
+  .app {
+    position: relative;
+    width: 72px; height: 72px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .app-icon {
+    width: 56px; height: 56px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    border: 2px solid rgba(240,235,224,0.1);
+    position: relative;
+    transition: border-color 0.15s;
+    background: rgba(6,6,12,0.6);
+  }
+
+  .app:hover .app-icon { border-color: rgba(0,255,224,0.5); }
+
+  .app-name {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: rgba(240,235,224,0.3);
+    margin-top: 2px;
+  }
+
+  /* ── Mock window ── */
+  #win {
+    position: fixed;
+    top: 130px; left: 50%;
+    transform: translateX(-50%);
+    width: 500px; height: 300px;
+    z-index: 30;
+    display: none;
+    background: rgba(6,6,12,0.7);
+    border: 1px solid rgba(240,235,224,0.06);
+  }
+  #win.show { display: block; }
+
+  .win-bar {
+    height: 32px;
+    background: rgba(240,235,224,0.04);
+    border-bottom: 1px solid rgba(240,235,224,0.06);
+    display: flex; align-items: center; padding: 0 14px; gap: 7px;
+  }
+  .wd { width: 11px; height: 11px; border-radius: 50%; background: rgba(240,235,224,0.08); }
+  .win-body {
+    display: flex; align-items: center; justify-content: center;
+    height: calc(100% - 32px);
+    color: rgba(240,235,224,0.06);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 13px;
+    letter-spacing: 5px;
+  }
+
+  /* ── HUD ── */
+  #hud {
+    position: fixed;
+    bottom: 48px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    width: 460px;
+    pointer-events: all;
+  }
+
+  .hud-inner {
+    background: rgba(6,6,12,0.94);
+    border: 1.5px solid var(--c1);
+    padding: 14px 18px 14px 18px;
+    position: relative;
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+  .hud-tag {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 10px; letter-spacing: 4px;
+    color: var(--c1); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .hud-tag::before { content: ''; display: block; width: 6px; height: 6px; background: var(--c1); border-radius: 50%; animation: tagpulse 1.2s ease-in-out infinite; }
+  @keyframes tagpulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.6)} }
+  #hudtext { font-size: 11px; color: rgba(240,235,224,0.8); line-height: 1.7; }
+  .hc { display: inline-block; width: 7px; height: 12px; background: var(--c1); margin-left: 2px; vertical-align: middle; animation: blink .65s steps(1) infinite; }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+
+  /* ── Controls ── */
+  #ctrl {
+    position: fixed;
+    bottom: 48px; right: 48px;
+    z-index: 200;
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: all;
+  }
+  .cb {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 11px; letter-spacing: 2px;
+    padding: 8px 16px;
+    background: rgba(6,6,12,0.9);
+    border: 1.5px solid rgba(240,235,224,0.15);
+    color: rgba(240,235,224,0.4);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.1s steps(2);
+    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+  }
+  .cb:hover, .cb.on { border-color: var(--c1); color: var(--c1); background: rgba(0,255,224,0.05); }
+
+  /* cursor */
+  #cur { position: fixed; width: 10px; height: 10px; border-radius: 50%; background: var(--c1); pointer-events: none; z-index: 9999; transform: translate(-50%,-50%); mix-blend-mode: exclusion; }
+</style>
+</head>
+<body>
+<div id="grain"></div>
+<div id="scan"></div>
+<canvas id="c"></canvas>
+
+<!-- Apps -->
+<div class="apps">
+  <div class="app" onclick="launchApp(this)" data-name="SPOTIFY">
+    <div class="app-icon">🎵</div>
+    <div class="app-name">SPOTIFY</div>
+  </div>
+  <div class="app" onclick="launchApp(this)" data-name="SAFARI">
+    <div class="app-icon">🌐</div>
+    <div class="app-name">SAFARI</div>
+  </div>
+  <div class="app" onclick="launchApp(this)" data-name="VS CODE">
+    <div class="app-icon">💻</div>
+    <div class="app-name">VS CODE</div>
+  </div>
+  <div class="app" onclick="launchApp(this)" data-name="MAIL">
+    <div class="app-icon">✉️</div>
+    <div class="app-name">MAIL</div>
+  </div>
+  <div class="app" onclick="launchApp(this)" data-name="TERMINAL">
+    <div class="app-icon">⬛</div>
+    <div class="app-name">TERMINAL</div>
+  </div>
+</div>
+
+<!-- Window mock -->
+<div id="win">
+  <div class="win-bar"><div class="wd"></div><div class="wd"></div><div class="wd"></div></div>
+  <div class="win-body">VENTANA ACTIVA</div>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hud-inner">
+    <div class="hud-tag">◈ JARVIS</div>
+    <div id="hudtext">Sistema activo.<span class="hc"></span></div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div id="ctrl">
+  <button class="cb on" onclick="goIdle()">◯ IDLE</button>
+  <button class="cb" onclick="goListening()">◉ ESCUCHANDO</button>
+  <button class="cb" onclick="goThinking()">◌ PENSANDO</button>
+  <button class="cb" onclick="goWindow()">▣ CONTROL VENTANA</button>
+</div>
+
+<div id="cur"></div>
+
+<script>
+// ─────────────────────────────────────────
+// SETUP
+// ─────────────────────────────────────────
+const cv = document.getElementById('c');
+const cx = cv.getContext('2d');
+let W = cv.width  = window.innerWidth;
+let H = cv.height = window.innerHeight;
+window.addEventListener('resize', () => { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; });
+
+let mx = W/2, my = H/2;
+document.addEventListener('mousemove', e => { mx=e.clientX; my=e.clientY; });
+
+const cur = document.getElementById('cur');
+
+// ─────────────────────────────────────────
+// PALETTE
+// ─────────────────────────────────────────
+const PAL = {
+  idle:      { main:'#00ffe0', alt:'#8b00ff', acc:'#ffe100', bg:'#00ffe020' },
+  listening: { main:'#00ff88', alt:'#00ffe0', acc:'#ffffff', bg:'#00ff8820' },
+  thinking:  { main:'#ffe100', alt:'#ff8800', acc:'#ff2060', bg:'#ffe10020' },
+  acting:    { main:'#ff2060', alt:'#8b00ff', acc:'#ffe100', bg:'#ff206020' },
+};
+
+let pal = PAL.idle;
+let mode = 'idle'; // idle | listening | thinking | wrapping | launching
+
+// ─────────────────────────────────────────
+// HOME position (center, with gentle float)
+// ─────────────────────────────────────────
+let homeX = W/2, homeY = H/2 - 20;
+
+// ─────────────────────────────────────────
+// PARTICLE
+// ─────────────────────────────────────────
+const GLYPHS = ['◆','◇','✦','◉','▸','◌','✕','○','◈','▲','◀','▶','▼'];
+
+class P {
+  constructor() {
+    this.init();
+    // scatter initial age
+    this.phase = Math.random()*Math.PI*2;
+    this.orbitA = Math.random()*Math.PI*2;
+  }
+
+  init() {
+    // home orbit params
+    this.orbitR  = 22 + Math.random()*60;
+    this.orbitA  = Math.random()*Math.PI*2;
+    this.orbitSp = (0.007+Math.random()*0.015) * (Math.random()<.5?1:-1);
+    this.tilt    = 0.3 + Math.random()*0.55; // ellipse Y scale
+    this.phase   = Math.random()*Math.PI*2;
+    this.size    = 1.8 + Math.random()*5;
+    this.baseSize= this.size;
+    this.op      = 0.35 + Math.random()*0.65;
+    this.color   = pal.main;
+    this.x = homeX; this.y = homeY;
+    this.trail   = [];
+    this.maxTr   = 3 + Math.floor(Math.random()*8);
+    this.isGlyph = Math.random()<0.09;
+    this.glyph   = GLYPHS[Math.floor(Math.random()*GLYPHS.length)];
+    this.frame   = 0;
+    this.step    = 2 + Math.floor(Math.random()*2); // on-twos
+    this.acc     = Math.floor(Math.random()*this.step);
+    // state machine
+    this.state   = 'orbit'; // orbit | fly | wrap-border | wrap-app | return
+    // fly params
+    this.fx=homeX; this.fy=homeY;   // from
+    this.tx=homeX; this.ty=homeY;   // to
+    this.t=0;
+    // wrap params
+    this.wpts    = null;
+    this.wi      = 0;
+    this.wsp     = 0.3 + Math.random()*0.4; // wrap speed multiplier
+    this.woffX   = (Math.random()-.5)*8;
+    this.woffY   = (Math.random()-.5)*8;
+    // delay before starting fly
+    this.delay   = 0;
+    this.delayed = 0;
+  }
+
+  // ── update ──
+  update() {
+    this.acc++;
+    if (this.acc < this.step) return;
+    this.acc = 0;
+    this.frame++;
+
+    if (this.state === 'orbit')      this._orbit();
+    else if (this.state === 'fly')   this._fly();
+    else if (this.state === 'wrap-border') this._wrapBorder();
+    else if (this.state === 'wrap-app')    this._wrapApp();
+    else if (this.state === 'return')      this._return();
+  }
+
+  _orbit() {
+    this.orbitA += this.orbitSp * this.step;
+    const ox = Math.cos(this.orbitA) * this.orbitR;
+    const oy = Math.sin(this.orbitA) * this.orbitR * this.tilt;
+    // gentle float of home
+    const hx = homeX + Math.sin(Date.now()*0.0003+this.phase)*6;
+    const hy = homeY + Math.cos(Date.now()*0.0004+this.phase)*4;
+    this._moveTo(hx+ox, hy+oy);
+    this.size = this.baseSize*(0.8+0.4*Math.sin(this.frame*0.06+this.phase));
+  }
+
+  _fly() {
+    if (this.delayed < this.delay) { this.delayed++; return; }
+    this.t += 0.05;
+    const t = Math.min(this.t, 1);
+    const e = t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+    // arc midpoint
+    const midX = (this.fx+this.tx)*.5 + (Math.random()-.5)*50;
+    const midY = Math.min(this.fy, this.ty) - 40 - Math.random()*60;
+    const q = 1-e;
+    const nx = q*q*this.fx + 2*q*e*midX + e*e*this.tx;
+    const ny = q*q*this.fy + 2*q*e*midY + e*e*this.ty;
+    this._moveTo(nx, ny);
+    this.size = this.baseSize*(1+(1-e)*2.5);
+    if (t>=1) {
+      this.state = this._nextWrapState;
+      this.wi = Math.floor(Math.random() * (this.wpts?.length||1));
+      this.t = 0;
+    }
+  }
+
+  _wrapBorder() {
+    if (!this.wpts || !this.wpts.length) return;
+    this.wi = (this.wi + this.wsp) % this.wpts.length;
+    const pt = this.wpts[Math.floor(this.wi)];
+    this._moveTo(pt.x + this.woffX + (Math.random()-.5)*4,
+                 pt.y + this.woffY + (Math.random()-.5)*4);
+    this.size = this.baseSize*(0.6 + 0.5*Math.sin(this.frame*.1+this.phase));
+  }
+
+  _wrapApp() {
+    if (!this.wpts || !this.wpts.length) return;
+    this.wi = (this.wi + this.wsp*1.4) % this.wpts.length;
+    const pt = this.wpts[Math.floor(this.wi)];
+    this._moveTo(pt.x + this.woffX + (Math.random()-.5)*6,
+                 pt.y + this.woffY + (Math.random()-.5)*6);
+    this.size = this.baseSize*(0.8+0.6*Math.sin(this.frame*.12+this.phase));
+  }
+
+  _return() {
+    this.t += 0.04;
+    const t = Math.min(this.t, 1);
+    const e = t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+    const hx = homeX + Math.sin(Date.now()*0.0003+this.phase)*6;
+    const hy = homeY + Math.cos(Date.now()*0.0004+this.phase)*4;
+    this._moveTo(this.fx*(1-e)+hx*e, this.fy*(1-e)+hy*e);
+    this.size = this.baseSize*(1+e*1.2);
+    if (t>=1) { this.state='orbit'; this.orbitA=Math.random()*Math.PI*2; this.trail=[]; }
+  }
+
+  _moveTo(nx, ny) {
+    this.trail.push({x:this.x, y:this.y});
+    if (this.trail.length > this.maxTr) this.trail.shift();
+    this.x = nx; this.y = ny;
+  }
+
+  flyTo(tx, ty, wpts, wrapState, delay=0) {
+    this.fx = this.x; this.fy = this.y;
+    this.tx = tx; this.ty = ty;
+    this.t = 0; this.delay = delay; this.delayed = 0;
+    this.wpts = wpts;
+    this._nextWrapState = wrapState;
+    this.state = 'fly';
+    this.trail = [];
+    this.color = pal.main;
+  }
+
+  returnHome() {
+    this.fx = this.x; this.fy = this.y;
+    this.t = 0;
+    this.state = 'return';
+    this.trail = [];
+  }
+
+  // ── draw ──
+  draw() {
+    const a = this.op;
+
+    // trail
+    for (let i=0; i<this.trail.length-1; i++) {
+      const t0=this.trail[i], t1=this.trail[i+1];
+      cx.beginPath();
+      cx.moveTo(t0.x,t0.y); cx.lineTo(t1.x,t1.y);
+      cx.strokeStyle = this.color;
+      cx.globalAlpha = (i/this.trail.length)*a*0.55;
+      cx.lineWidth   = this.size*0.35*(i/this.trail.length);
+      cx.stroke();
+    }
+    cx.globalAlpha = a;
+
+    if (this.isGlyph && this.size>2.5) {
+      const sz = Math.floor(this.size*2.8);
+      cx.font = `${sz}px 'Space Mono'`;
+      cx.textAlign='center'; cx.textBaseline='middle';
+      // chromatic
+      cx.globalAlpha = a*0.35;
+      cx.fillStyle='#ff2060'; cx.fillText(this.glyph, this.x-1.5, this.y);
+      cx.fillStyle='#00ffe0'; cx.fillText(this.glyph, this.x+1.5, this.y);
+      cx.globalAlpha = a;
+      cx.fillStyle=this.color; cx.fillText(this.glyph, this.x, this.y);
+    } else {
+      // glow dot
+      cx.shadowBlur = this.size*5;
+      cx.shadowColor= this.color;
+      cx.beginPath();
+      cx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      cx.fillStyle = this.color;
+      cx.fill();
+      cx.shadowBlur=0;
+      // ink core
+      cx.beginPath();
+      cx.arc(this.x, this.y, this.size*.35, 0, Math.PI*2);
+      cx.fillStyle='rgba(6,6,12,.7)';
+      cx.fill();
+    }
+
+    cx.globalAlpha=1; cx.shadowBlur=0;
+  }
+}
+
+// ─────────────────────────────────────────
+// INIT PARTICLES
+// ─────────────────────────────────────────
+const NUM = 90;
+const particles = Array.from({length:NUM}, () => new P());
+particles.forEach(p => { p.color = pal.main; });
+
+// ─────────────────────────────────────────
+// CORE (only in orbit/idle modes)
+// ─────────────────────────────────────────
+let frame = 0;
+let coreOpacity = 1;
+
+function drawCore() {
+  if (coreOpacity <= 0) return;
+  const hx = homeX + Math.sin(Date.now()*.0003)*6;
+  const hy = homeY + Math.cos(Date.now()*.0004)*4;
+  const r  = 26 + 5*Math.sin(frame*.05);
+
+  cx.globalAlpha = coreOpacity;
+
+  // outer glow
+  const g = cx.createRadialGradient(hx,hy,0, hx,hy,r*2.5);
+  g.addColorStop(0, pal.main+'88');
+  g.addColorStop(0.5, pal.main+'22');
+  g.addColorStop(1, 'transparent');
+  cx.beginPath(); cx.arc(hx,hy,r*2.5,0,Math.PI*2);
+  cx.fillStyle=g; cx.fill();
+
+  // halftone dot cluster
+  for (let i=0;i<28;i++) {
+    const a = (i/28)*Math.PI*2 + frame*.009;
+    const d = 6 + 16*Math.abs(Math.sin(i*.7+frame*.04));
+    const dx = hx + Math.cos(a)*d;
+    const dy = hy + Math.sin(a)*d*.55;
+    const ds = 1.2 + 1.8*Math.abs(Math.sin(i*.9));
+    cx.beginPath(); cx.arc(dx,dy,ds,0,Math.PI*2);
+    cx.fillStyle=pal.main;
+    cx.globalAlpha = coreOpacity * (.3+.7*Math.abs(Math.sin(frame*.07+i*.4)));
+    cx.fill();
+  }
+
+  // dashed ink ring
+  cx.globalAlpha = coreOpacity*.7;
+  cx.beginPath(); cx.arc(hx,hy,r,0,Math.PI*2);
+  cx.strokeStyle=pal.main; cx.lineWidth=2;
+  cx.setLineDash([5,7]); cx.lineDashOffset=-frame*.6;
+  cx.stroke(); cx.setLineDash([]);
+
+  // second ring (alt color)
+  cx.globalAlpha = coreOpacity*.35;
+  cx.beginPath(); cx.arc(hx,hy,r*1.5,0,Math.PI*2);
+  cx.strokeStyle=pal.alt; cx.lineWidth=1;
+  cx.setLineDash([3,12]); cx.lineDashOffset=frame*.4;
+  cx.stroke(); cx.setLineDash([]);
+
+  // speed lines (on-twos)
+  if (frame%3===0) {
+    for (let i=0;i<10;i++) {
+      const a=(i/10)*Math.PI*2+frame*.02;
+      const inner=r+6, outer=r+14+Math.random()*18;
+      cx.beginPath();
+      cx.moveTo(hx+Math.cos(a)*inner, hy+Math.sin(a)*inner);
+      cx.lineTo(hx+Math.cos(a)*outer, hy+Math.sin(a)*outer);
+      cx.strokeStyle=pal.main; cx.globalAlpha=.15+Math.random()*.2;
+      cx.lineWidth=1; cx.stroke();
+    }
+  }
+  cx.globalAlpha=1;
+}
+
+// ─────────────────────────────────────────
+// WRAP POINTS helpers
+// ─────────────────────────────────────────
+function borderPoints(rect, n=120) {
+  const pts=[], {left:x,top:y,width:w,height:h}=rect;
+  const perPx = 2*w+2*h;
+  const perSeg = n/4;
+  for(let i=0;i<perSeg;i++) pts.push({x:x+(i/perSeg)*w, y:y});
+  for(let i=0;i<perSeg;i++) pts.push({x:x+w, y:y+(i/perSeg)*h});
+  for(let i=0;i<perSeg;i++) pts.push({x:x+w-(i/perSeg)*w, y:y+h});
+  for(let i=0;i<perSeg;i++) pts.push({x:x, y:y+h-(i/perSeg)*h});
+  return pts;
+}
+
+function appRingPoints(rect, n=80, padding=14) {
+  const pts=[];
+  const x=rect.left-padding, y=rect.top-padding;
+  const w=rect.width+padding*2, h=rect.height+padding*2;
+  const perSeg=n/4;
+  for(let i=0;i<perSeg;i++) pts.push({x:x+(i/perSeg)*w, y:y});
+  for(let i=0;i<perSeg;i++) pts.push({x:x+w, y:y+(i/perSeg)*h});
+  for(let i=0;i<perSeg;i++) pts.push({x:x+w-(i/perSeg)*w, y:y+h});
+  for(let i=0;i<perSeg;i++) pts.push({x:x, y:y+h-(i/perSeg)*h});
+  return pts;
+}
+
+// ─────────────────────────────────────────
+// STATES
+// ─────────────────────────────────────────
+let wrapping = false;
+let appWrapping = false;
+let appReturnTimer = null;
+
+function updatePalette() {
+  particles.forEach(p => {
+    if (p.state==='orbit') {
+      p.color = Math.random()<.7 ? pal.main : pal.alt;
+    }
+  });
+}
+
+function goIdle() {
+  mode='idle'; pal=PAL.idle; wrapping=false; appWrapping=false;
+  clearTimeout(appReturnTimer);
+  coreOpacity=1;
+  particles.forEach(p => { p.returnHome(); p.color=pal.main; });
+  setBtnOn('◯ IDLE');
+  document.getElementById('win').classList.remove('show');
+  say('Entidad en reposo. Observando el sistema.');
+}
+
+function goListening() {
+  mode='listening'; pal=PAL.listening; wrapping=false; appWrapping=false;
+  clearTimeout(appReturnTimer);
+  coreOpacity=1;
+  particles.forEach(p => { if(p.state!=='orbit') p.returnHome(); p.color=pal.main; });
+  document.getElementById('win').classList.remove('show');
+  setBtnOn('◉ ESCUCHANDO');
+  say('Escuchando... habla cuando quieras.');
+}
+
+function goThinking() {
+  mode='thinking'; pal=PAL.thinking; wrapping=false; appWrapping=false;
+  clearTimeout(appReturnTimer);
+  coreOpacity=1;
+  particles.forEach(p => { if(p.state!=='orbit') p.returnHome(); p.color=pal.main; });
+  document.getElementById('win').classList.remove('show');
+  setBtnOn('◌ PENSANDO');
+  say('Procesando. Consultando contexto del sistema.');
+}
+
+function goWindow() {
+  mode='wrapping'; pal=PAL.thinking; wrapping=true; appWrapping=false;
+  coreOpacity=0; // NO core visible
+  const win=document.getElementById('win');
+  win.classList.add('show');
+  setBtnOn('▣ CONTROL VENTANA');
+  say('Control de ventana activo. La entidad rodea el objetivo.');
+
+  // Wait a frame so the DOM is visible
+  requestAnimationFrame(() => {
+    const rect = win.getBoundingClientRect();
+    const wpts = borderPoints(rect, 140);
+
+    particles.forEach((p, i) => {
+      const target = wpts[Math.floor(Math.random()*wpts.length)];
+      p.color = Math.random()<.6 ? pal.main : pal.alt;
+      p.flyTo(
+        target.x + (Math.random()-.5)*8,
+        target.y + (Math.random()-.5)*8,
+        wpts, 'wrap-border',
+        i * 1.4   // staggered delay in "frames"
+      );
+    });
+  });
+}
+
+function launchApp(el) {
+  if (appWrapping) return;
+  appWrapping=true;
+  pal=PAL.acting; mode='acting'; coreOpacity=0;
+  const rect = el.querySelector('.app-icon').getBoundingClientRect();
+  const wpts = appRingPoints(rect, 100, 16);
+  const name  = el.dataset.name;
+  say(`Lanzando ${name}. La entidad viaja y rodea el objetivo.`);
+  setBtnOn('');
+
+  particles.forEach((p,i) => {
+    const target = wpts[Math.floor(Math.random()*wpts.length)];
+    p.color = Math.random()<.6 ? pal.main : pal.alt;
+    p.flyTo(
+      target.x+(Math.random()-.5)*12,
+      target.y+(Math.random()-.5)*12,
+      wpts, 'wrap-app',
+      i * 1.6
+    );
+  });
+
+  // After 2.8s return to idle
+  appReturnTimer = setTimeout(() => {
+    appWrapping=false;
+    pal=PAL.idle; mode='idle'; coreOpacity=1;
+    particles.forEach(p => { p.returnHome(); p.color=pal.main; });
+    setBtnOn('◯ IDLE');
+    say('App lanzada. Entidad de vuelta.');
+  }, 3000);
+}
+
+// ─────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────
+function setBtnOn(label) {
+  document.querySelectorAll('.cb').forEach(b => b.classList.toggle('on', b.textContent.trim()===label));
+}
+
+let typeT=null;
+function say(txt) {
+  const el=document.getElementById('hudtext');
+  clearInterval(typeT); el.textContent=''; let i=0;
+  typeT=setInterval(()=>{
+    el.textContent+=txt[i++];
+    if(i>=txt.length){ clearInterval(typeT); const s=document.createElement('span'); s.className='hc'; el.appendChild(s); }
+  },22);
+}
+
+// ─────────────────────────────────────────
+// RENDER LOOP
+// ─────────────────────────────────────────
+let lastUpdate=0;
+const STEP=1000/24;
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+
+  cur.style.left=mx+'px'; cur.style.top=my+'px';
+
+  if(ts-lastUpdate >= STEP) {
+    lastUpdate=ts; frame++;
+    particles.forEach(p=>p.update());
+    // fade core when wrapping
+    if(wrapping||appWrapping||mode==='acting') {
+      coreOpacity=Math.max(0,coreOpacity-0.05);
+    } else {
+      coreOpacity=Math.min(1,coreOpacity+0.03);
+    }
+  }
+
+  cx.clearRect(0,0,W,H);
+  drawCore();
+  particles.forEach(p=>p.draw());
+}
+
+requestAnimationFrame(loop);
+goIdle();
+</script>
+</body>
+</html>

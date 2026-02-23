@@ -2,7 +2,8 @@
 particles.py
 
 Sistema de partículas para la animación fly_to.
-Las partículas nacen en el orb y vuelan en arco bezier hasta el destino.
+Las partículas nacen en la nube y vuelan en arco bezier hasta el destino.
+Estética cloud entity: colores de la paleta acting (pink + purple) con trail.
 
 Integración con JarvisView:
   view.attach_particles(ParticleSystem(view))
@@ -24,26 +25,37 @@ import AppKit
 
 # ── Partícula individual ────────────────────────────────────────────────────────
 
+# Paleta acting: pink + purple (coincide con el estado 'acting' de la nube)
+_PINK   = (1.000, 0.125, 0.376)
+_PURPLE = (0.545, 0.000, 1.000)
+_CYAN   = (0.000, 1.000, 0.878)
+
+
 class _Particle:
-    """Una partícula que sigue una curva bezier cuadrática de A → B."""
+    """
+    Una partícula fly_to que sigue una curva bezier cuadrática de A → B.
+    Estética cloud entity: colores acting (pink/purple) con trail de 3 puntos.
+    """
 
     __slots__ = (
         "x0", "y0", "x1", "y1",
-        "cx", "cy",          # control point de la curva
-        "x", "y",            # posición actual
-        "t",                 # progreso 0→1
-        "delay",             # tiempo antes de arrancar
-        "speed",             # unidades de t por segundo
+        "cx", "cy",           # control point de la curva
+        "x", "y",             # posición actual
+        "t",                  # progreso 0→1
+        "delay",              # tiempo antes de arrancar
+        "speed",              # unidades de t por segundo
         "size",
         "alpha",
         "alive",
+        "color",              # (r,g,b) — pink o purple
+        "trail",              # lista de (x,y) para el trail
     )
 
     def __init__(
         self,
         x0: float, y0: float,
         x1: float, y1: float,
-        wobble: float,   # desviación perpendicular al eje de vuelo
+        wobble: float,
         delay: float,
         speed: float,
     ) -> None:
@@ -51,19 +63,22 @@ class _Particle:
         self.x1, self.y1 = x1, y1
         self.x,  self.y  = x0, y0
 
-        # Vector perpendicular al eje de vuelo → punto de control
         dx, dy = x1 - x0, y1 - y0
         dist   = math.sqrt(dx * dx + dy * dy) or 1.0
-        px, py = -dy / dist, dx / dist           # perpendicular unitario
+        px, py = -dy / dist, dx / dist
         self.cx = (x0 + x1) / 2 + px * wobble
         self.cy = (y0 + y1) / 2 + py * wobble
 
         self.delay = delay
         self.speed = speed
         self.t     = 0.0
-        self.size  = random.uniform(2.0, 4.5)
+        self.size  = random.uniform(1.8, 4.0)
         self.alpha = 0.0
         self.alive = True
+        # alternancia pink/purple/cyan para variedad
+        r = random.random()
+        self.color = _PINK if r < 0.5 else (_PURPLE if r < 0.82 else _CYAN)
+        self.trail: list = []
 
     def update(self, dt: float) -> None:
         if self.delay > 0:
@@ -77,7 +92,12 @@ class _Particle:
 
         t, u = self.t, 1.0 - self.t
 
-        # Bezier cuadrática: B(t) = u²·P0 + 2·u·t·C + t²·P1
+        # Guardar posición anterior en trail (máx 3 puntos)
+        self.trail.append((self.x, self.y))
+        if len(self.trail) > 3:
+            self.trail.pop(0)
+
+        # Bezier cuadrática
         self.x = u*u*self.x0 + 2*u*t*self.cx + t*t*self.x1
         self.y = u*u*self.y0 + 2*u*t*self.cy + t*t*self.y1
 
@@ -93,29 +113,43 @@ class _Particle:
         if not self.alive or self.alpha <= 0:
             return
 
-        # Halo
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            0.0, 0.71, 1.0, self.alpha * 0.35
-        ).set()
-        r = self.size * 1.6
+        cr, cg, cb = self.color
+        a  = self.alpha
+        sz = self.size
+
+        # Trail
+        n_tr = len(self.trail)
+        if n_tr >= 2:
+            for i in range(n_tr - 1):
+                x0, y0 = self.trail[i]
+                x1, y1 = self.trail[i + 1]
+                tr_a = a * (i / n_tr) * 0.40
+                if tr_a < 0.008:
+                    continue
+                seg = AppKit.NSBezierPath.bezierPath()
+                seg.setLineWidth_(sz * 0.25 * ((i + 1) / n_tr))
+                seg.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+                seg.moveToPoint_(AppKit.NSMakePoint(x0, y0))
+                seg.lineToPoint_(AppKit.NSMakePoint(x1, y1))
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, tr_a).set()
+                seg.stroke()
+
+        # Halo exterior
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * 0.30).set()
+        r = sz * 1.8
         AppKit.NSBezierPath.bezierPathWithOvalInRect_(
             AppKit.NSMakeRect(self.x - r, self.y - r, r * 2, r * 2)
         ).fill()
 
         # Cuerpo
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            0.0, 0.71, 1.0, self.alpha * 0.85
-        ).set()
-        s = self.size
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * 0.85).set()
         AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-            AppKit.NSMakeRect(self.x - s, self.y - s, s * 2, s * 2)
+            AppKit.NSMakeRect(self.x - sz, self.y - sz, sz * 2, sz * 2)
         ).fill()
 
-        # Núcleo blanco
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, self.alpha * 0.7
-        ).set()
-        c = s * 0.45
+        # Núcleo oscuro (ink core)
+        c = sz * 0.35
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.75).set()
         AppKit.NSBezierPath.bezierPathWithOvalInRect_(
             AppKit.NSMakeRect(self.x - c, self.y - c, c * 2, c * 2)
         ).fill()

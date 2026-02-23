@@ -361,6 +361,7 @@ class JarvisDaemon:
 
     def _run(self) -> None:
         self._request_accessibility()
+        self._request_microphone_permission()
         self._setup_hotkey()
         self._wake_ok = self._start_wake_word()
 
@@ -435,6 +436,7 @@ class JarvisDaemon:
         voice_started = False
         silence_count = 0
         wait_count    = 0
+        peak_rms      = 0.0   # para diagnóstico de permisos
 
         try:
             print("🎤 Escuchando...")
@@ -443,6 +445,7 @@ class JarvisDaemon:
                 channels=self.stt.cfg.channels,
                 dtype=self.stt.cfg.dtype,
                 blocksize=chunk_sz,
+                device=self.stt.cfg.device,
             ) as stream:
                 for _ in range(max_chunks):
                     if not self._running or self._interrupt_event.is_set():
@@ -450,6 +453,8 @@ class JarvisDaemon:
 
                     chunk, _ = stream.read(chunk_sz)
                     rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+                    if rms > peak_rms:
+                        peak_rms = rms
 
                     # VU meter: nivel normalizado al orb
                     self.bridge.set_audio_level(min(1.0, rms / self._VU_NORM))
@@ -468,6 +473,12 @@ class JarvisDaemon:
                             break
                     else:
                         wait_count += 1
+                        # Diagnóstico tras 3s: si no llega señal, avisar de permisos
+                        if wait_count == 100 and peak_rms < 5.0:
+                            print(f"⚠️  Sin señal de audio (RMS pico: {peak_rms:.1f}). "
+                                  f"Umbral VAD: {self._VAD_THRESHOLD}")
+                            print("   Verifica: Ajustes → Privacidad → Micrófono → "
+                                  "activa permiso para Terminal/Python")
                         if wait_count >= wait_chunks:
                             break
 
@@ -481,7 +492,7 @@ class JarvisDaemon:
                 if wait_timeout_s is not None:
                     # En modo follow-up, silencio = usuario no quiso hablar → no grabar
                     return None
-                print("⚠️ Sin voz detectada, grabando 5s fijos...")
+                print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f}, umbral={self._VAD_THRESHOLD})")
                 return self.stt.record_to_wav(out_path, seconds=5.0)
 
             audio = np.concatenate(frames, axis=0)
@@ -696,6 +707,42 @@ class JarvisDaemon:
             self._try_followup()
 
     # ── Accesibilidad ─────────────────────────────────────────────────────────
+
+    def _request_microphone_permission(self) -> None:
+        """Verifica y solicita permiso de micrófono en macOS (AVFoundation)."""
+        try:
+            import AVFoundation
+            status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+                AVFoundation.AVMediaTypeAudio
+            )
+            # 0=notDetermined, 1=restricted, 2=denied, 3=authorized
+            if status == 3:
+                print("✅ Permiso de micrófono: autorizado")
+                return
+            if status == 2:
+                print("❌ Permiso de micrófono DENEGADO")
+                print("   Ve a: Ajustes del Sistema → Privacidad y Seguridad → Micrófono")
+                print("   y activa el permiso para Terminal (o Python)")
+                return
+            if status == 0:
+                print("⏳ Solicitando permiso de micrófono...")
+                done = threading.Event()
+
+                def _handler(granted):
+                    if granted:
+                        print("✅ Permiso de micrófono concedido")
+                    else:
+                        print("❌ Permiso de micrófono denegado por el usuario")
+                        print("   Actívalo en: Ajustes → Privacidad → Micrófono → Terminal")
+                    done.set()
+
+                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVFoundation.AVMediaTypeAudio, _handler
+                )
+                done.wait(timeout=30)
+        except Exception as e:
+            # AVFoundation no disponible o no necesario — ignorar silenciosamente
+            print(f"ℹ️  Verificación de permiso de micrófono: {e}")
 
     def _request_accessibility(self) -> None:
         try:
