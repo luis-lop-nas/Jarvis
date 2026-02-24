@@ -55,8 +55,10 @@ jarvis-agent/
 │   ├── logs/
 │   └── workspace/           # Archivos temporales del agente
 ├── tests/
-│   ├── test_overlay.py      # Test visual del orb (sin daemon)
-│   └── test_overlay_daemon.py  # Test completo overlay + daemon
+│   ├── test_overlay.py           # Test visual del orb (sin daemon)
+│   ├── test_overlay_daemon.py    # Test completo overlay + daemon
+│   ├── test_intent_tracker.py    # Tests unitarios IntentTracker (61 tests)
+│   └── test_send_message.py      # Tests unitarios send_message (45 tests)
 └── src/
     └── jarvis/
         ├── config.py            # Settings centralizados (pydantic-settings)
@@ -66,6 +68,7 @@ jarvis-agent/
         │   ├── runner.py        # AgentConfig (base dataclass)
         │   ├── state.py         # AgentState + truncate_history
         │   ├── tool_agent.py    # Motor principal: Claude/Gemini/Groq/Ollama
+        │   ├── intent_tracker.py  # Multi-step intent: parámetros faltantes
         │   └── prompts.py       # SYSTEM_PROMPT + SYSTEM_PROMPT_GROQ
         ├── knowledge/
         │   └── knowledge_base.py  # RAG con ChromaDB + sentence-transformers
@@ -94,6 +97,7 @@ jarvis-agent/
         │   ├── spotify.py
         │   ├── calendar.py
         │   ├── email.py
+        │   ├── send_message.py  # iMessage/WhatsApp/Telegram vía AppleScript
         │   ├── vision.py
         │   ├── code_assistant.py
         │   ├── knowledge.py
@@ -182,8 +186,13 @@ Wake word ("Hey Jarvis")   →  orb verde    → graba con VAD
    o Ctrl+Space / botón    →  orb verde    → popup de texto / panel de chat
 
 Transcripción / texto      →  orb naranja  → LLM procesa con contexto automático
-                                              (hora + app activa + portapapeles)
+                                              (hora + app activa + portapapeles
+                                               + intent pendiente si lo hay)
                                               (órbitas girando)
+
+Parámetros faltantes       →  orb naranja  → IntentTracker pregunta uno a uno
+                                              HUD muestra "⚙ Completando: tool"
+                                              follow-up extendido a 30s
 
 Tool visual (open_app...)  →  orb azul     → 30 partículas
                                               vuelan al Dock
@@ -192,7 +201,7 @@ Tool visual (open_app...)  →  orb azul     → 30 partículas
 TTS respuesta              →  orb azul     → Jarvis habla (respuesta completa)
                                               HUD muestra el texto 3.5s
 Fin (sin seguimiento)      →  orb azul     → idle
-  o seguimiento (6s)       →  orb verde    → escucha sin wake word
+  o seguimiento (6s/30s)   →  orb verde    → escucha sin wake word
 ```
 
 ### Clases clave del overlay
@@ -243,6 +252,7 @@ Botón × circular aparece al hover sobre el panel glass (fade 0→1 en 150ms).
 - Click-through (`setIgnoresMouseEvents_(True)`)
 - Fade-out automático 3.5s tras fin del TTS (`schedule_hide()`)
 - Oculto inmediatamente si hay interrupción (`hide()`)
+- Muestra `⚙ Completando: tool — falta: param` cuando hay intent pendiente
 
 ### Panel de chat — ChatPanel (`chat_panel.py`)
 
@@ -259,14 +269,18 @@ Cada petición al LLM inyecta automáticamente:
 - **App activa** y título de ventana (Accessibility API)
 - **URL** si el navegador tiene una página abierta
 - **Portapapeles** (si hay >5 chars, primeros 200 chars)
+- **Intent pendiente** si el tracker tiene parámetros ya recopilados
 
 Formato: `[Sistema: hora: 14:30 | app activa: Safari | URL: ... | portapapeles: «...»]`
+Intent: `[Intent pendiente: herramienta=send_email | parámetros ya recopilados: to='Pedro' | parámetros que faltan: subject]`
 
 ### Conversación continua (follow-up)
 
-Tras responder, el daemon escucha 6s sin requerir wake word (`_try_followup`).
-Si el usuario habla → nuevo turno de conversación.
-Si no hay voz → vuelve a idle silenciosamente.
+Tras responder, el daemon escucha sin requerir wake word (`_try_followup`).
+- **Timeout normal**: 6s (conversación libre)
+- **Timeout extendido**: 30s cuando `IntentTracker.is_pending() == True` (recopilando parámetros)
+
+Si el usuario habla → nuevo turno. Si no → vuelve a idle silenciosamente.
 
 ### Detección de posición del Dock (`dock.py`)
 
@@ -287,6 +301,42 @@ Instala un LaunchAgent en `~/Library/LaunchAgents/com.jarvis.desktop.plist`. Act
 - En modo desktop, `VisualRegistry` intercepta `open_app`, `shell`, `code_assistant`, `organize_files` para lanzar `fly_to` antes de ejecutar
 - **Dos prompts:** `SYSTEM_PROMPT` (Claude/Gemini/Ollama) y `SYSTEM_PROMPT_GROQ` (compacto, evita confundir el function calling de llama)
 
+### Multi-step Intent (`intent_tracker.py`)
+
+`ToolAgent` instancia un `IntentTracker` que resuelve peticiones con parámetros incompletos mediante diálogo iterativo.
+
+**Dos vías de detección:**
+
+| Vía | Cuándo activa | Mecanismo |
+|-----|--------------|-----------|
+| **Estructural** | LLM intenta llamar una tool con params obligatorios vacíos | `check_tool_call()` intercepta antes de ejecutar |
+| **Conversacional** | LLM responde con una pregunta en lugar de usar la tool | `analyze_llm_response()` detecta `?` al final |
+
+**Flujo estructural (Groq/Ollama):**
+1. LLM intenta `send_email({to: "", subject: ""})` → tracker detecta params faltantes
+2. Devuelve la pregunta directamente sin añadir el tool_call al historial (evita mensajes huérfanos)
+3. Daemon habla la pregunta, extiende follow-up a 30s
+4. Usuario responde → context injection inyecta `[Intent pendiente: ...]` en el siguiente prompt
+5. LLM llama de nuevo con el param nuevo + los ya recopilados → ejecuta
+
+**Flujo conversacional (Claude):**
+1. Claude ve params faltantes en el schema `required` y pregunta por ellos sin llamar la tool
+2. Tracker detecta `?` en la respuesta → activa `dialog_mode`
+3. Follow-up extendido a 30s; siguiente turno con historial completo
+4. Claude llama la tool cuando tiene todos los params
+
+**API pública de `IntentTracker`:**
+
+| Método | Llamado desde | Propósito |
+|--------|--------------|-----------|
+| `check_tool_call(name, args, registry)` | `tool_agent.py` (cada backend) | Intercepta antes de ejecutar; devuelve pregunta o None |
+| `on_tool_executed(name)` | `tool_agent.py` (tras ejecutar) | Limpia el intent cuando la tool completa |
+| `analyze_llm_response(response)` | `daemon.py` (tras `agent.run()`) | Detecta modo diálogo por `?` al final |
+| `check_user_cancel(text)` | `daemon.py` (inicio `_process_text`) | Detecta "cancela"/"olvídalo"/etc. |
+| `get_context_injection()` | `daemon.py` (build del prompt) | Genera `[Intent pendiente: ...]` |
+| `get_followup_timeout(default)` | `daemon.py` (`_try_followup`) | 30s si pendiente, default si no |
+| `get_status_text()` | `daemon.py` (HUD) | `"⚙ Completando: tool — falta: param"` |
+
 ### Limpieza de texto para TTS (`_clean_for_speech`)
 
 Antes de hablar, el daemon filtra:
@@ -298,7 +348,7 @@ Antes de hablar, el daemon filtra:
 
 El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) para evitar pausas.
 
-## 🛠️ Herramientas Disponibles (17)
+## 🛠️ Herramientas Disponibles (18)
 
 | Tool | Descripción |
 |------|-------------|
@@ -310,6 +360,7 @@ El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) pa
 | `spotify` | Control de Spotify |
 | `calendar` | Consultar/crear eventos de calendario |
 | `send_email` | Enviar emails via Mail.app |
+| `send_message` | Enviar mensajes por iMessage/WhatsApp/Telegram |
 | `vision` | Analizar pantalla (describe/OCR/contexto) |
 | `code_assistant` | Generar código + abrir en VS Code |
 | `knowledge` | Buscar/añadir en base de conocimiento RAG |
@@ -319,6 +370,23 @@ El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) pa
 | `system_info` | CPU, RAM, disco, batería, red, procesos |
 | `datetime` | Fecha y hora actual con zona horaria |
 | `weather` | Clima de cualquier ciudad (sin API key) |
+
+### Tool: `send_message`
+
+Envía mensajes de texto vía AppleScript. Los inputs se pasan como `argv` al script (nunca interpolados), eliminando cualquier riesgo de AppleScript injection.
+
+| Plataforma | Mecanismo | Automatización |
+|-----------|-----------|----------------|
+| `messages` (default) | AppleScript nativo de Messages.app | 100% — sin acción del usuario |
+| `whatsapp` | UI scripting vía System Events | Requiere permiso Accesibilidad |
+| `telegram` | UI scripting vía System Events | Requiere permiso Accesibilidad |
+
+**Parámetros:** `receiver` (obligatorio), `message_text` (obligatorio), `platform` (opcional)
+**Alias de plataforma:** `imessage`, `sms` → messages · `wa` → whatsapp · `tg` → telegram
+
+**Permisos macOS:**
+- Messages: Ajustes → Privacidad → Automatización → Terminal → Messages ✓
+- WhatsApp/Telegram: Ajustes → Privacidad → Accesibilidad → Terminal ✓
 
 ## 🔌 WebSocket API (modo --web)
 
@@ -341,6 +409,8 @@ El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) pa
 - **PyObjC**: usar `objc.super(Cls, self).method_()` en subclases ObjC (no `super()`)
 - **AXValueGetValue**: devuelve `(bool, CGPoint/CGSize)` — completamente bridgeado en pyobjc-framework-ApplicationServices
 - **MainPanel foco de texto**: `popup._show()` se llama desde el handler del click (contexto de gesto) para garantizar permiso de macOS 14+ de asignar foco al campo
+- **AppleScript injection**: en `send_message.py` los strings de usuario se pasan como `argv` a `osascript -` (stdin), nunca interpolados en el cuerpo del script
+- **IntentTracker**: para Groq/Ollama la intercepción es antes de añadir el tool_call al historial de mensajes (evita tool_calls huérfanos sin su tool_result)
 
 ## 🐛 Debugging
 
@@ -353,6 +423,10 @@ PYTHONPATH=src python tests/test_overlay.py
 
 # Overlay + daemon completo
 PYTHONPATH=src python tests/test_overlay_daemon.py
+
+# Tests unitarios
+PYTHONPATH=src pytest tests/test_intent_tracker.py -v   # 61 tests
+PYTHONPATH=src pytest tests/test_send_message.py -v     # 45 tests
 
 # Web con debug
 PYTHONPATH=src uvicorn jarvis.web.server:app --log-level debug
@@ -376,4 +450,4 @@ tail -f /tmp/jarvis.err
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 2.1.0
+**Versión**: 2.2.0
