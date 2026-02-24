@@ -58,6 +58,7 @@ def build_default_registry() -> ToolRegistry:
         spotify,
         calendar,
         email,
+        send_message,
         vision,
         code_assistant,
         knowledge,
@@ -185,7 +186,31 @@ def build_default_registry() -> ToolRegistry:
         )
     )
 
-    # 9. Vision
+    # 9. Send Message
+    registry.register(
+        ToolSpec(
+            name="send_message",
+            description=(
+                "Envía mensajes de texto por Messages (iMessage/SMS), WhatsApp o Telegram en macOS. "
+                "Messages funciona sin interacción del usuario. "
+                "WhatsApp y Telegram requieren permiso de Accesibilidad."
+            ),
+            fn=send_message.run_send_message,
+            schema={
+                "receiver": (
+                    "Destinatario: nombre del contacto, número (+34612345678) "
+                    "o usuario (@nombre). (obligatorio)"
+                ),
+                "message_text": "Texto del mensaje a enviar (obligatorio)",
+                "platform": (
+                    "Plataforma: messages (default, iMessage/SMS), whatsapp, telegram. "
+                    "Alias: imessage, sms, wa, tg (opcional)"
+                ),
+            },
+        )
+    )
+
+    # 10. Vision
     registry.register(
         ToolSpec(
             name="vision",

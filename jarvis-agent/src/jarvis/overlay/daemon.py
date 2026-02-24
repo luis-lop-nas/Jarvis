@@ -606,11 +606,15 @@ class JarvisDaemon:
         if not self._running or self._interrupt_event.is_set():
             return
 
-        print(f"👂 Esperando seguimiento ({self._FOLLOWUP_TIMEOUT_S:.0f}s)...")
+        # Extended timeout when the tracker is collecting parameters
+        followup_s = self.agent.intent_tracker.get_followup_timeout(
+            default=self._FOLLOWUP_TIMEOUT_S
+        )
+        print(f"👂 Esperando seguimiento ({followup_s:.0f}s)...")
         self.bridge.set_state("listening")
 
         audio_path = self._record_with_vad(
-            self._wav_path, wait_timeout_s=self._FOLLOWUP_TIMEOUT_S
+            self._wav_path, wait_timeout_s=followup_s
         )
 
         if audio_path is None or self._interrupt_event.is_set():
@@ -653,14 +657,23 @@ class JarvisDaemon:
             if self._chat_panel is not None and not from_chat_panel:
                 self._chat_panel.add_user_message(text)
 
-            # ── Inyectar contexto del entorno automáticamente
+            # ── Cancelación de intent pendiente (antes de inyectar contexto)
+            self.agent.intent_tracker.check_user_cancel(text)
+
+            # ── Inyectar contexto del entorno + intent pendiente
             context = self._get_context()
+            intent_ctx = self.agent.intent_tracker.get_context_injection()
             if context:
                 augmented = f"{text}\n\n[Sistema: {context}]"
             else:
                 augmented = text
+            if intent_ctx:
+                augmented = f"{augmented}\n{intent_ctx}"
 
             response = self.agent.run(augmented)
+
+            # ── Actualizar tracker con la respuesta del LLM
+            self.agent.intent_tracker.analyze_llm_response(response)
 
             if not response or self._interrupt_event.is_set():
                 return
@@ -672,8 +685,10 @@ class JarvisDaemon:
             if self._chat_panel is not None:
                 self._chat_panel.add_jarvis_message(response)
 
-            # ── Mostrar respuesta completa en el HUD (texto original, con formato)
-            self._hud.show_text(response)
+            # ── Mostrar respuesta en HUD; añadir estado de intent si está activo
+            intent_status = self.agent.intent_tracker.get_status_text()
+            hud_text = f"{intent_status}\n\n{response}" if intent_status else response
+            self._hud.show_text(hud_text)
 
             # ── Limpiar para TTS: sin markdown, sin <function=...>, sin anotaciones
             speech_text = _clean_for_speech(response)

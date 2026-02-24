@@ -18,6 +18,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import requests
 
+from jarvis.agent.intent_tracker import IntentTracker
 from jarvis.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_GROQ
 from jarvis.agent.runner import AgentConfig
 from jarvis.agent.state import AgentState, truncate_history
@@ -101,6 +102,9 @@ class ToolAgent:
                     print("✅ Groq activado como LLM principal")
             except ImportError:
                 print("⚠️ Librería 'groq' no instalada.")
+
+        # Multi-step intent tracker (shared across all backends)
+        self.intent_tracker = IntentTracker()
 
         # Pre-computar schemas de tools (inmutables durante la vida del agente)
         self._cached_claude_tools = self._tools_for_claude()
@@ -304,7 +308,30 @@ class ToolAgent:
                         if self.config.debug:
                             print(f"🔧 Claude usa: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
 
+                        # Check for missing required params before executing
+                        question = self.intent_tracker.check_tool_call(
+                            tool_name, tool_args, self.registry
+                        )
+                        if question:
+                            # Params missing — send a synthetic tool_result so Claude
+                            # stays in a valid conversation state and asks the user.
+                            if self.config.debug:
+                                print(f"⏳ Intent pendiente ({tool_name}): {question}")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps({
+                                    "ok": False,
+                                    "error": (
+                                        f"Parámetros obligatorios faltantes. "
+                                        f"Pregunta al usuario: {question}"
+                                    ),
+                                }, ensure_ascii=False),
+                            })
+                            continue  # don't execute the tool
+
                         tool_out = self.registry.call(tool_name, tool_args)
+                        self.intent_tracker.on_tool_executed(tool_name)
                         self._save_tool_event(tool_name, tool_args, tool_out)
 
                         tool_results.append({
@@ -435,10 +462,22 @@ class ToolAgent:
                 fc = part.function_call
                 tool_args = dict(fc.args) if fc.args else {}
 
+                # Check for missing required params before executing
+                question = self.intent_tracker.check_tool_call(
+                    fc.name, tool_args, self.registry
+                )
+                if question:
+                    if self.config.debug:
+                        print(f"⏳ Intent pendiente ({fc.name}): {question}")
+                    self.state.add_assistant(question)
+                    self._save_message("assistant", question)
+                    return question
+
                 if self.config.debug:
                     print(f"🔧 Gemini usa: {fc.name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
 
                 tool_out = self.registry.call(fc.name, tool_args)
+                self.intent_tracker.on_tool_executed(fc.name)
                 self._save_tool_event(fc.name, tool_args, tool_out)
 
                 result_parts.append(
@@ -531,7 +570,28 @@ class ToolAgent:
                 self._save_message("assistant", text)
                 return text
 
-            # Groq quiere usar herramientas — añadir respuesta al historial
+            # Check for missing required params BEFORE adding tool_calls to messages.
+            # For Groq, returning early avoids leaving an orphaned tool_call in history.
+            first_question: Optional[str] = None
+            for tc in msg_out.tool_calls:
+                _tname = tc.function.name
+                try:
+                    _targs = json.loads(tc.function.arguments or "{}")
+                except Exception:
+                    _targs = {}
+                _q = self.intent_tracker.check_tool_call(_tname, _targs, self.registry)
+                if _q:
+                    first_question = _q
+                    if self.config.debug:
+                        print(f"⏳ Intent pendiente ({_tname}): {_q}")
+                    break
+
+            if first_question:
+                self.state.add_assistant(first_question)
+                self._save_message("assistant", first_question)
+                return first_question
+
+            # All params present — añadir respuesta al historial y ejecutar
             messages.append({
                 "role": "assistant",
                 "content": msg_out.content or "",
@@ -560,6 +620,7 @@ class ToolAgent:
                     print(f"🔧 Groq usa: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
 
                 tool_out = self.registry.call(tool_name, tool_args)
+                self.intent_tracker.on_tool_executed(tool_name)
                 self._save_tool_event(tool_name, tool_args, tool_out)
 
                 messages.append({
@@ -654,6 +715,31 @@ class ToolAgent:
                 self._save_message("assistant", text)
                 return text
 
+            # Check for missing required params BEFORE adding tool_calls to messages
+            first_question_ollama: Optional[str] = None
+            for tc in tool_calls:
+                _func = tc.get("function", {})
+                _tname = _func.get("name", "")
+                _targs_raw = _func.get("arguments", {})
+                if isinstance(_targs_raw, str):
+                    try:
+                        _targs = json.loads(_targs_raw)
+                    except Exception:
+                        _targs = {}
+                else:
+                    _targs = _targs_raw
+                _q = self.intent_tracker.check_tool_call(_tname, _targs, self.registry)
+                if _q:
+                    first_question_ollama = _q
+                    if self.config.debug:
+                        print(f"⏳ Intent pendiente ({_tname}): {_q}")
+                    break
+
+            if first_question_ollama:
+                self.state.add_assistant(first_question_ollama)
+                self._save_message("assistant", first_question_ollama)
+                return first_question_ollama
+
             messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
 
             for tc in tool_calls:
@@ -669,6 +755,7 @@ class ToolAgent:
                     tool_args = tool_args_raw
 
                 tool_out = self.registry.call(tool_name, tool_args)
+                self.intent_tracker.on_tool_executed(tool_name)
                 self._save_tool_event(tool_name, tool_args, tool_out)
                 messages.append({"role": "tool", "content": json.dumps(tool_out, ensure_ascii=False)})
 
