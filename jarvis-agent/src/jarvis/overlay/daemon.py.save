@@ -40,6 +40,7 @@ from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
 from jarvis.intents.good_morning import run_morning_briefing, answer_fact_follow_up
 
+
 # ── Limpieza de texto para TTS ────────────────────────────────────────────────
 
 # Patrones que NO deben pronunciarse
@@ -690,71 +691,7 @@ class JarvisDaemon:
                 augmented = f"{augmented}\n{intent_ctx}"
 
             response = self.agent.run(augmented)
-            # ── Intención local: "buenos días" (briefing) ─────────────────
-            text_norm = (text or "").strip().lower()
-            if "buenos días" in text_norm or "buenos dias" in text_norm:
-                response = run_morning_briefing().text
 
-                self.agent.intent_tracker.analyze_llm_response(response)
-
-                if not response or self._interrupt_event.is_set():
-                    return
-
-                print(f"🤖 Jarvis (briefing): «{response}»")
-                self.bridge.set_state("acting")
-
-                if self._chat_panel is not None:
-                    self._chat_panel.add_jarvis_message(response)
-
-                self._hud.show_text(response)
-
-                speech_text = _clean_for_speech(response)
-                if not speech_text:
-                    self.bridge.set_state("idle")
-                    return
-
-                if not self._interrupt_event.is_set():
-                    self.tts.speak_nonblocking(speech_text)
-                    while self.tts.is_speaking:
-                        if self._interrupt_event.is_set():
-                            self.tts.stop()
-                            break
-                        time.sleep(0.05)
-
-                return
-
-            # ── Follow-up del dato random ("¿por qué?", "explícame") ──────
-            fact_reply = answer_fact_follow_up(text)
-            if fact_reply:
-                response = fact_reply
-
-                self.agent.intent_tracker.analyze_llm_response(response)
-
-                if not response or self._interrupt_event.is_set():
-                    return
-
-                print(f"🤖 Jarvis (fact follow-up): «{response}»")
-                self.bridge.set_state("acting")
-
-                if self._chat_panel is not None:
-                    self._chat_panel.add_jarvis_message(response)
-
-                self._hud.show_text(response)
-
-                speech_text = _clean_for_speech(response)
-                if not speech_text:
-                    self.bridge.set_state("idle")
-                    return
-
-                if not self._interrupt_event.is_set():
-                    self.tts.speak_nonblocking(speech_text)
-                    while self.tts.is_speaking:
-                        if self._interrupt_event.is_set():
-                            self.tts.stop()
-                            break
-                        time.sleep(0.05)
-
-                return
             # ── Actualizar tracker con la respuesta del LLM
             self.agent.intent_tracker.analyze_llm_response(response)
 
