@@ -41,6 +41,7 @@ JARVIS (Just A Rather Very Intelligent System) es un asistente de IA con overlay
    - **Ollama**: Fallback local (`llama3.2:3b`)
    - **Voice**: STT (Groq Whisper + VAD por energía) · TTS (ElevenLabs / Piper / macOS say)
    - **Vision**: Análisis de pantalla con Quartz + APIs de Accesibilidad
+   - **Gestures**: Control por gestos de mano con MediaPipe (opcional, `USE_GESTURES=true`)
 
 ## 📁 Estructura del Proyecto
 
@@ -58,7 +59,10 @@ jarvis-agent/
 │   ├── test_overlay.py           # Test visual del orb (sin daemon)
 │   ├── test_overlay_daemon.py    # Test completo overlay + daemon
 │   ├── test_intent_tracker.py    # Tests unitarios IntentTracker (61 tests)
-│   └── test_send_message.py      # Tests unitarios send_message (45 tests)
+│   ├── test_send_message.py      # Tests unitarios send_message (45 tests)
+│   ├── test_web_agent.py         # Tests unitarios web_agent (69 tests)
+│   ├── test_gesture_controller.py # Tests unitarios gesture_controller (54 tests)
+│   └── test_cad_generator.py     # Tests unitarios cad_generator (63 tests)
 └── src/
     └── jarvis/
         ├── config.py            # Settings centralizados (pydantic-settings)
@@ -94,6 +98,7 @@ jarvis-agent/
         │   ├── open_app.py
         │   ├── run_code.py
         │   ├── web_search.py
+        │   ├── web_agent.py     # Agente web autónomo con Playwright
         │   ├── spotify.py
         │   ├── calendar.py
         │   ├── email.py
@@ -105,13 +110,15 @@ jarvis-agent/
         │   ├── download_file.py
         │   ├── system_info.py
         │   ├── datetime_tool.py
-        │   └── weather.py
+        │   ├── weather.py
+        │   └── cad_generator.py # Generación 3D CAD con build123d → STL
         ├── ui/
         │   └── cli.py
         ├── vision/
         │   ├── screenshot.py
         │   ├── vision_analyzer.py
-        │   └── accessibility.py
+        │   ├── accessibility.py
+        │   └── gesture_controller.py  # Control por gestos MediaPipe (opcional)
         ├── voice/
         │   ├── stt.py           # STT (Groq Whisper / local Whisper)
         │   ├── tts.py           # TTS (ElevenLabs / Piper / macOS say)
@@ -151,6 +158,12 @@ ELEVENLABS_VOICE_ID=...
 # Wake word
 WAKE_WORD_ENGINE=openwakeword
 WAKE_WORD=jarvis
+
+# Gesture control (opcional)
+USE_GESTURES=false
+GESTURE_COOLDOWN=1.5
+GESTURE_DEBUG=false
+GESTURE_CAMERA_INDEX=0
 ```
 
 ## 🚀 Arrancar Jarvis
@@ -165,6 +178,11 @@ PYTHONPATH=src python -m jarvis --desktop
 # Modo Web
 PYTHONPATH=src uvicorn jarvis.web.server:app --host 0.0.0.0 --port 8000
 # Abrir: http://localhost:8000
+
+# Instalar dependencias opcionales
+pip install -e ".[browser]"   # Playwright para web_agent
+pip install -e ".[cad]"       # build123d para cad_generator
+playwright install chromium   # Instalar navegador Chromium
 ```
 
 ## 🖥️ Overlay Desktop — Arquitectura
@@ -179,11 +197,17 @@ El NSApplication corre en el hilo principal. El orb se dibuja a 30fps con NSTime
 
 El daemon corre en background. Se comunica con el overlay vía `OverlayBridge` (cola thread-safe bombeada por NSTimer cada 50ms).
 
+### Hilo terciario (gesture controller, opcional)
+`gesture_controller.py` → `daemon.trigger_queue` / `daemon.interrupt()`
+
+El `GestureController` corre en un daemon thread independiente. Se comunica con el daemon vía la `_trigger_queue` existente y los métodos públicos `interrupt()`, `pause_gesture()`, `resume_gesture()`.
+
 ### Ciclo de interacción
 
 ```
 Wake word ("Hey Jarvis")   →  orb verde    → graba con VAD
    o Ctrl+Space / botón    →  orb verde    → popup de texto / panel de chat
+   o gesto V-sign          →  orb verde    → trigger de voz por gesto
 
 Transcripción / texto      →  orb naranja  → LLM procesa con contexto automático
                                               (hora + app activa + portapapeles
@@ -220,6 +244,7 @@ Fin (sin seguimiento)      →  orb azul     → idle
 | `MainPanel` | `main_panel.py` | Panel liquid glass esquina inferior derecha (Quit/Voice/Type) |
 | `MenuBar` | `menubar.py` | Icono ◉ J, toggle Silenciar, toggle Autostart |
 | `TextInputPopup` | `text_input.py` | Popup texto para hotkey Ctrl+Space |
+| `GestureController` | `gesture_controller.py` | Control por gestos de mano (daemon thread, opcional) |
 
 ### Estados del orb
 
@@ -348,28 +373,30 @@ Antes de hablar, el daemon filtra:
 
 El TTS recibe la respuesta completa en una sola llamada (`speak_nonblocking`) para evitar pausas.
 
-## 🛠️ Herramientas Disponibles (18)
+## 🛠️ Herramientas Disponibles (20)
 
-| Tool | Descripción |
-|------|-------------|
-| `shell` | Ejecutar comandos shell |
-| `filesystem` | Leer/escribir/mover/copiar archivos |
-| `open_app` | Abrir apps, URLs o archivos en macOS |
-| `run_code` | Ejecutar Python/Node en Docker sandbox |
-| `web_search` | Búsqueda DuckDuckGo |
-| `spotify` | Control de Spotify |
-| `calendar` | Consultar/crear eventos de calendario |
-| `send_email` | Enviar emails via Mail.app |
-| `send_message` | Enviar mensajes por iMessage/WhatsApp/Telegram |
-| `vision` | Analizar pantalla (describe/OCR/contexto) |
-| `code_assistant` | Generar código + abrir en VS Code |
-| `knowledge` | Buscar/añadir en base de conocimiento RAG |
-| `organize_files` | Organizar archivos por tipo/fecha |
-| `download_file` | Descargar archivos de internet |
-| `search_and_download` | Buscar y descargar automáticamente |
-| `system_info` | CPU, RAM, disco, batería, red, procesos |
-| `datetime` | Fecha y hora actual con zona horaria |
-| `weather` | Clima de cualquier ciudad (sin API key) |
+| # | Tool | Descripción |
+|---|------|-------------|
+| 1 | `shell` | Ejecutar comandos shell |
+| 2 | `filesystem` | Leer/escribir/mover/copiar archivos |
+| 3 | `open_app` | Abrir apps, URLs o archivos en macOS |
+| 4 | `run_code` | Ejecutar Python/Node en Docker sandbox |
+| 5 | `web_search` | Búsqueda DuckDuckGo |
+| 6 | `spotify` | Control de Spotify |
+| 7 | `calendar` | Consultar/crear eventos de calendario |
+| 8 | `send_email` | Enviar emails via Mail.app |
+| 9 | `send_message` | Enviar mensajes por iMessage/WhatsApp/Telegram |
+| 10 | `vision` | Analizar pantalla (describe/OCR/contexto) |
+| 11 | `code_assistant` | Generar código + abrir en VS Code |
+| 12 | `knowledge` | Buscar/añadir en base de conocimiento RAG |
+| 13 | `organize_files` | Organizar archivos por tipo/fecha |
+| 14 | `download_file` | Descargar archivos de internet |
+| 15 | `search_and_download` | Buscar y descargar automáticamente |
+| 16 | `system_info` | CPU, RAM, disco, batería, red, procesos |
+| 17 | `datetime` | Fecha y hora actual con zona horaria |
+| 18 | `weather` | Clima de cualquier ciudad (sin API key) |
+| 19 | `web_agent` | Agente de navegación web autónoma con Playwright |
+| 20 | `cad_generator` | Generar modelos 3D → STL con build123d |
 
 ### Tool: `send_message`
 
@@ -387,6 +414,63 @@ Envía mensajes de texto vía AppleScript. Los inputs se pasan como `argv` al sc
 **Permisos macOS:**
 - Messages: Ajustes → Privacidad → Automatización → Terminal → Messages ✓
 - WhatsApp/Telegram: Ajustes → Privacidad → Accesibilidad → Terminal ✓
+
+### Tool: `web_agent`
+
+Agente autónomo de navegación web usando Playwright + Chromium. El LLM decide cada acción (clic, scroll, fill, extract…) observando screenshots + DOM en cada paso.
+
+**Parámetros:** `task` (obligatorio), `url` (opcional), `max_steps` (default 20), `headless` (default false), `force_sensitive` (default false)
+
+**Acciones disponibles:** `navigate`, `google_search`, `click`, `type`, `press_enter`, `scroll`, `wait`, `extract`, `done`
+
+**Acciones sensibles** (piden confirmación): compras, login, envío de formularios, pagos, eliminar cuenta.
+
+**Requiere:** `pip install -e ".[browser]"` + `playwright install chromium`
+
+**LLM priority para screenshots:** Claude (vision) → Groq (texto) → Gemini (vision)
+
+### Tool: `cad_generator`
+
+Genera modelos 3D paramétricos a partir de lenguaje natural usando build123d. Soporta iteraciones pasando el `session_id` de la respuesta anterior.
+
+**Parámetros:** `description` (obligatorio), `session_id` (opcional, para iterar), `max_retries` (default 3), `open_viewer` (default false)
+
+**Flujo interno:**
+1. LLM genera código build123d con `_SYSTEM_PROMPT` (ejemplos verificados)
+2. Validación AST: bloquea imports peligrosos (`os`, `sys`, `subprocess`…) y llamadas (`eval`, `exec`…)
+3. Inyecta `OUTPUT_STL = "..."` antes del código
+4. Ejecuta en subproceso aislado (`sys.executable`) con timeout 120s
+5. Si falla, reenvía el error al LLM y reintenta (hasta 3 veces)
+6. Persiste `{code, stl_path, iterations}` en `~/.../models/.cad_sessions.json`
+
+**STL guardado en:** `~/Documents/Jarvis/models/<descripcion>_<timestamp>.stl`
+
+**Requiere:** `pip install -e ".[cad]"` (build123d con OpenCASCADE)
+
+### Gesture Controller (`gesture_controller.py`)
+
+Control de JARVIS por gestos de mano usando la cámara del MacBook. Activar con `USE_GESTURES=true` en `.env`.
+
+| Gesto | Acción |
+|-------|--------|
+| Puño cerrado | Interrumpir TTS + LLM en curso |
+| Palma abierta | Pausar/reanudar el daemon (toggle) |
+| Pinza (pulgar + índice) | Confirmar acción pendiente |
+| V / Victoria | Activar modo voz (trigger_voice_input) |
+| Pulgar arriba | Respuesta "sí" |
+| Pulgar abajo | Respuesta "no" |
+
+**Parámetros de config:**
+- `GESTURE_COOLDOWN=1.5` — segundos entre gestos consecutivos
+- `GESTURE_DEBUG=false` — mostrar feed de cámara con landmarks
+- `GESTURE_CAMERA_INDEX=0` — índice de cámara
+
+**API pública del daemon (añadida para gestos):**
+- `daemon.interrupt()` — detiene TTS + señala `_interrupt_event`
+- `daemon.pause_gesture()` / `resume_gesture()` — pausa el wake word loop
+- `daemon.trigger_queue` — cola IPC para inyectar texto/comandos
+
+**Requiere:** `pip install mediapipe opencv-python`
 
 ## 🔌 WebSocket API (modo --web)
 
@@ -411,6 +495,11 @@ Envía mensajes de texto vía AppleScript. Los inputs se pasan como `argv` al sc
 - **MainPanel foco de texto**: `popup._show()` se llama desde el handler del click (contexto de gesto) para garantizar permiso de macOS 14+ de asignar foco al campo
 - **AppleScript injection**: en `send_message.py` los strings de usuario se pasan como `argv` a `osascript -` (stdin), nunca interpolados en el cuerpo del script
 - **IntentTracker**: para Groq/Ollama la intercepción es antes de añadir el tool_call al historial de mensajes (evita tool_calls huérfanos sin su tool_result)
+- **Playwright stub**: `sync_playwright = None` en módulo cuando no está instalado; tests usan `patch("...._PLAYWRIGHT_AVAILABLE", True)` + mock de `sync_playwright`
+- **Gesture detection orden**: PINCH → THUMB_UP/DOWN (requiere extensión lateral) → FIST → OPEN_PALM → V_SIGN. El pulgar en un puño no se clasifica como THUMB porque `fingers_up()` comprueba extensión lateral antes de la dirección vertical
+- **CAD code validation**: AST walk bloquea imports fuera de `{build123d, math}` y llamadas a `{eval, exec, compile, __import__, breakpoint}`. Comprobación de presencia de `result_part` y `export_stl` por substring
+- **CAD subprocess**: ejecuta con `sys.executable` (venv local) porque build123d necesita OCC que es complejo en Docker
+- **CAD session context**: `~/.../models/.cad_sessions.json` — JSON con `{sessions: {session_id: {code, stl_path, iterations, updated_at}}}`
 
 ## 🐛 Debugging
 
@@ -425,8 +514,12 @@ PYTHONPATH=src python tests/test_overlay.py
 PYTHONPATH=src python tests/test_overlay_daemon.py
 
 # Tests unitarios
-PYTHONPATH=src pytest tests/test_intent_tracker.py -v   # 61 tests
-PYTHONPATH=src pytest tests/test_send_message.py -v     # 45 tests
+PYTHONPATH=src pytest tests/test_intent_tracker.py -v      # 61 tests
+PYTHONPATH=src pytest tests/test_send_message.py -v        # 45 tests
+PYTHONPATH=src pytest tests/test_web_agent.py -v           # 69 tests
+PYTHONPATH=src pytest tests/test_gesture_controller.py -v  # 54 tests
+PYTHONPATH=src pytest tests/test_cad_generator.py -v       # 63 tests
+PYTHONPATH=src pytest tests/ -v                            # 292 tests (todos)
 
 # Web con debug
 PYTHONPATH=src uvicorn jarvis.web.server:app --log-level debug
@@ -450,4 +543,4 @@ tail -f /tmp/jarvis.err
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 2.2.0
+**Versión**: 2.3.0

@@ -295,6 +295,7 @@ class JarvisDaemon:
         self._wake_ok = False
         self._hotkey_listener = None
         self._is_recording = False   # True mientras graba (suprime re-trigger de wake word)
+        self._gesture_paused = False # True cuando un gesto ha pausado la escucha
 
         # ── Popup de texto (hotkey)
         from jarvis.overlay.text_input import TextInputPopup
@@ -331,6 +332,24 @@ class JarvisDaemon:
         """
         self._interrupt_event.set()
         self._trigger_queue.put("hotkey")
+
+    def interrupt(self) -> None:
+        """
+        Interrumpe el TTS/grabación en curso sin iniciar una nueva petición.
+        Usado por el gesto de puño cerrado. Thread-safe.
+        """
+        self._interrupt_event.set()
+        self.tts.stop()
+
+    def pause_gesture(self) -> None:
+        """Pausa la escucha (activado por gesto palma abierta). Thread-safe."""
+        self._gesture_paused = True
+        print("⏸  Jarvis pausado por gesto")
+
+    def resume_gesture(self) -> None:
+        """Reanuda la escucha (activado por segundo gesto palma abierta). Thread-safe."""
+        self._gesture_paused = False
+        print("▶  Jarvis reanudado por gesto")
 
     def start(self) -> None:
         self._running = True
@@ -399,8 +418,8 @@ class JarvisDaemon:
     def _wake_word_loop(self) -> None:
         """Thread siempre activo que detecta wake word incluso mientras Jarvis habla."""
         while self._running and self._wake_listener is not None:
-            # No detectar mientras estamos grabando (evita doble-trigger)
-            if self._is_recording:
+            # No detectar mientras grabamos o la escucha está pausada por gesto
+            if self._is_recording or self._gesture_paused:
                 time.sleep(0.1)
                 continue
             try:

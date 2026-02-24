@@ -85,6 +85,11 @@ rag = [
   "chromadb>=0.5.5",
 ]
 
+# Generación de modelos 3D CAD con build123d
+cad = [
+  "build123d>=0.7.0",
+]
+
 [project.scripts]
 # Esto crea el comando "jarvis" en tu entorno:
 #   jarvis

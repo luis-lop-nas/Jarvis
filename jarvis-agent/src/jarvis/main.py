@@ -196,6 +196,14 @@ def _run_desktop(settings, paths) -> None:
     # Conectar panel al menú de la barra de menú
     _menubar.set_main_panel(_main_panel)
 
+    # ── Gesture controller (opcional) ─────────────────────────────────────────
+    _gesture_ctrl = None
+    if getattr(settings, "use_gestures", False):
+        from jarvis.vision.gesture_controller import build_gesture_controller
+        _gesture_ctrl = build_gesture_controller(settings, daemon)
+        if _gesture_ctrl is not None:
+            _gesture_ctrl.start()
+
     # ── App delegate — definido DESPUÉS de todos los componentes ──────────────
     class _AppDelegate(AppKit.NSObject):
 
@@ -219,6 +227,8 @@ def _run_desktop(settings, paths) -> None:
     app.run()
 
     daemon.stop()
+    if _gesture_ctrl is not None:
+        _gesture_ctrl.stop()
 
 
 if __name__ == "__main__":

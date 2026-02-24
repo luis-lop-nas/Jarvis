@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     elevenlabs_model: str = Field(default="eleven_multilingual_v2", alias="ELEVENLABS_MODEL")
     tts_engine: str = Field(default="elevenlabs", alias="TTS_ENGINE")  # elevenlabs, piper, macos
 
+    # --- Gesture control ---
+    use_gestures: bool = Field(default=False, alias="USE_GESTURES")
+    gesture_cooldown: float = Field(default=1.5, alias="GESTURE_COOLDOWN")
+    gesture_debug: bool = Field(default=False, alias="GESTURE_DEBUG")
+    gesture_camera_index: int = Field(default=0, alias="GESTURE_CAMERA_INDEX")
+
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
 

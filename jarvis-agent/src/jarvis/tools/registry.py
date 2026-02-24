@@ -55,6 +55,7 @@ def build_default_registry() -> ToolRegistry:
         run_code,
         shell,
         web_search,
+        web_agent,
         spotify,
         calendar,
         email,
@@ -67,6 +68,7 @@ def build_default_registry() -> ToolRegistry:
         system_info,
         datetime_tool,
         weather,
+        cad_generator,
     )
 
     registry = ToolRegistry()
@@ -340,6 +342,57 @@ def build_default_registry() -> ToolRegistry:
             schema={
                 "city": "Ciudad (obligatorio, ej: Madrid, Barcelona, New York)",
                 "days": "Días de pronóstico adicionales (0-2, default 0 = solo hoy)",
+            },
+        )
+    )
+
+    # 18. Web Agent
+    registry.register(
+        ToolSpec(
+            name="web_agent",
+            description=(
+                "Agente de navegación web autónoma. Abre un navegador Chromium visible y navega "
+                "por internet para completar tareas: buscar precios, rellenar formularios, "
+                "extraer información, hacer clic en elementos, etc. "
+                "Pide confirmación antes de acciones sensibles (compras, login, envío de formularios). "
+                "Ejemplos: 'Ve a Amazon y busca el iPhone más barato', "
+                "'Extrae los precios de esta página', 'Rellena el formulario de contacto'."
+            ),
+            fn=web_agent.run_web_agent,
+            schema={
+                "task": "Descripción de la tarea a realizar (obligatorio). Ej: 'Busca el iPhone más barato en Amazon'",
+                "url": "URL inicial (opcional). Si se omite, el agente busca en Google",
+                "max_steps": "Número máximo de pasos del agente (opcional, default 20)",
+                "headless": "Si True, el navegador no es visible (opcional, default False)",
+                "force_sensitive": "Si True, omite confirmaciones en acciones sensibles como compras o login (opcional, default False — USAR CON CUIDADO)",
+            },
+        )
+    )
+
+    # 19. CAD Generator
+    registry.register(
+        ToolSpec(
+            name="cad_generator",
+            description=(
+                "Genera modelos 3D paramétricos a partir de descripciones en lenguaje natural "
+                "usando la librería build123d. Exporta ficheros STL listos para imprimir en 3D. "
+                "Soporta iteraciones: si el usuario dice 'hazlo más alto' o 'añade un agujero', "
+                "modifica el modelo anterior usando el session_id. "
+                "Ejemplos: 'un cubo de 50mm con un agujero central de 10mm de radio', "
+                "'una esfera de 30mm', 'un cilindro de 25mm de radio y 40mm de alto'."
+            ),
+            fn=cad_generator.run_cad_generator,
+            schema={
+                "description": (
+                    "Descripción del modelo 3D en lenguaje natural (obligatorio). "
+                    "Ej: 'un cubo de 50mm con un agujero central de 10mm'"
+                ),
+                "session_id": (
+                    "ID de sesión para iteraciones (opcional). "
+                    "Reutiliza el session_id de la respuesta anterior para modificar el modelo."
+                ),
+                "max_retries": "Número máximo de intentos de generación (opcional, default 3)",
+                "open_viewer": "Abrir el STL en el visor por defecto al terminar (bool, opcional, default false)",
             },
         )
     )
