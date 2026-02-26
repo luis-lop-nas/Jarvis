@@ -39,7 +39,7 @@ JARVIS (Just A Rather Very Intelligent System) es un asistente de IA con overlay
    - **Gemini (Google)**: Alternativa cloud con tool use nativo
    - **Groq API**: `llama-3.3-70b-versatile` — motor activo (gratis, 14.400 req/día)
    - **Ollama**: Fallback local (`llama3.2:3b`)
-   - **Voice**: STT (Groq Whisper + VAD por energía) · TTS (ElevenLabs / Piper / macOS say)
+   - **Voice**: STT (Groq Whisper) · VAD Silero ONNX (ML, sin torchaudio) con pre-buffer 1.5s · TTS (ElevenLabs / Piper / macOS say)
    - **Vision**: Análisis de pantalla con Quartz + APIs de Accesibilidad
    - **Gestures**: Control por gestos de mano con MediaPipe (opcional, `USE_GESTURES=true`)
 
@@ -158,6 +158,12 @@ ELEVENLABS_VOICE_ID=...
 # Wake word
 WAKE_WORD_ENGINE=openwakeword
 WAKE_WORD=jarvis
+WAKE_BEEP=true                      # beep 440Hz 80ms al detectar wake word
+
+# VAD avanzado (Silero ONNX — sin torchaudio)
+VAD_ENGINE=silero                   # "silero" (default) | "rms" (legacy)
+VAD_SILENCE_MS=480                  # ms de silencio para cortar grabación
+VAD_PRE_BUFFER_MS=1500              # ms de ring buffer pre-wake
 
 # Gesture control (opcional)
 USE_GESTURES=false
@@ -205,7 +211,7 @@ El `GestureController` corre en un daemon thread independiente. Se comunica con 
 ### Ciclo de interacción
 
 ```
-Wake word ("Hey Jarvis")   →  orb verde    → graba con VAD
+Wake word ("Hey Jarvis")   →  beep 440Hz   → orb verde    → graba con VAD Silero
    o Ctrl+Space / botón    →  orb verde    → popup de texto / panel de chat
    o gesto V-sign          →  orb verde    → trigger de voz por gesto
 
@@ -236,6 +242,7 @@ Fin (sin seguimiento)      →  orb azul     → idle
 | `JarvisView` | `view.py` | Dibuja orb + halos + órbitas; gestiona drag |
 | `ParticleSystem` | `particles.py` | Vuelos de partículas bezier (`fly_to`) |
 | `OverlayBridge` | `bridge.py` | Cola IPC + `run_on_main_thread()` |
+| `_SileroVAD` | `daemon.py` | Wrapper ONNX de Silero VAD (sin torchaudio); singleton; estado LSTM por sesión |
 | `VisualRegistry` | `daemon.py` | ToolRegistry que intercepta tools para lanzar `fly_to` |
 | `JarvisDaemon` | `daemon.py` | Wake word / hotkey / VAD / STT / LLM / TTS / follow-up |
 | `_ClipboardMonitor` | `daemon.py` | Monitoriza portapapeles (1s poll, máx 250 chars) |
@@ -487,7 +494,13 @@ Control de JARVIS por gestos de mano usando la cámara del MacBook. Activar con 
 ## ⚡ Detalles de Implementación
 
 - **FastAPI lifespan**: usa `@asynccontextmanager` (no el deprecated `@on_event`)
-- **VAD**: grabación por energía RMS, para al detectar ~0.9s de silencio (threshold 300, int16)
+- **VAD Silero**: clase `_SileroVAD` en `daemon.py` usa `onnxruntime` directamente sobre `~/.cache/torch/hub/.../silero_vad.onnx`. Sin `torchaudio`. ONNX inputs: `input (1,512)`, `state (2,1,128)`, `sr (int64)`. Singleton cargado lazy en primer uso. Fallback a VAD RMS si el ONNX no existe.
+- **Pre-buffer wake word**: `OpenWakeWordListener` mantiene un `collections.deque` de 1.5s (≈18 chunks de 1280 muestras). Al detectar wake word, `get_prebuffer()` vuelca y limpia el deque. `_record_with_vad_silero()` rechunquea los chunks OWW (1280) → Silero (512) y los antepone a la grabación.
+- **Noise floor adaptativo**: `_update_noise_floor()` aplica EMA (α=0.05) durante los primeros 1.6s de espera pre-voz. El umbral dinámico es `noise_floor × 1.5` (filtro rápido antes de invocar Silero).
+- **Silencio de corte adaptativo**: 10 chunks (320ms) para frases <2s de voz; 15 chunks (480ms) para frases ≥2s. Doble condición: `silence_count >= budget AND prob < 0.25`.
+- **VAD RMS legacy** (`_record_with_vad_rms`): conservado como fallback; 30 chunks × 30ms = 900ms.
+- **Beep wake word**: `_play_wake_beep()` genera onda seno 440Hz 80ms con fade in/out 10ms via `sd.play(..., blocking=False)`. Desactivar con `WAKE_BEEP=false`.
+- **Buenos días antes del LLM**: el check de "buenos días" y fact follow-up ocurre ANTES de `agent.run()` para evitar llamadas innecesarias a la API.
 - **Coordenadas macOS**: (0,0) = esquina inferior-izquierda; AX API usa top-left → conversión en `dock.py`
 - **Thread model**: NSApplication en hilo principal; daemon en thread secundario; bridge sincroniza con NSTimer cada 50ms
 - **PyObjC**: usar `objc.super(Cls, self).method_()` en subclases ObjC (no `super()`)
@@ -500,10 +513,21 @@ Control de JARVIS por gestos de mano usando la cámara del MacBook. Activar con 
 - **CAD code validation**: AST walk bloquea imports fuera de `{build123d, math}` y llamadas a `{eval, exec, compile, __import__, breakpoint}`. Comprobación de presencia de `result_part` y `export_stl` por substring
 - **CAD subprocess**: ejecuta con `sys.executable` (venv local) porque build123d necesita OCC que es complejo en Docker
 - **CAD session context**: `~/.../models/.cad_sessions.json` — JSON con `{sessions: {session_id: {code, stl_path, iterations, updated_at}}}`
+- **Gemini candidates guard**: `tool_agent.py` comprueba `if not response.candidates` antes de acceder al índice 0 (puede ser lista vacía por filtro de contenido)
+- **weather.py indexing**: usa `data.get("current_condition", [])` con check explícito de lista vacía; `hourly[4]` protegido con `len(hourly) > 4`
+- **web_agent fallback LLM**: respeta `USE_CLAUDE=false` también en el bloque fallback de `_detect_llm_config()`
 
 ## 🐛 Debugging
 
 ```bash
+# Test Silero VAD ONNX (sin arrancar Jarvis)
+PYTHONPATH=src python -c "
+from jarvis.overlay.daemon import _SileroVAD
+import numpy as np
+vad = _SileroVAD.load()
+print('prob silencio:', vad(np.zeros(512, dtype=np.float32)))
+"
+
 # Modo desktop con logs
 PYTHONPATH=src python -m jarvis --desktop
 
@@ -543,4 +567,4 @@ tail -f /tmp/jarvis.err
 ---
 
 **Última actualización**: Febrero 2026
-**Versión**: 2.3.0
+**Versión**: 2.4.0

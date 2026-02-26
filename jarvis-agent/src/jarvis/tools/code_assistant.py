@@ -78,8 +78,10 @@ Genera el código ahora:"""
             temperature=0.3,  # Más determinista para código
         )
         
+        if not response.choices or not response.choices[0].message.content:
+            return {"ok": False, "error": "LLM no generó código"}
         generated_code = response.choices[0].message.content.strip()
-        
+
         # Limpiar bloques de markdown si los hay
         if generated_code.startswith("```"):
             lines = generated_code.split("\n")
@@ -90,6 +92,8 @@ Genera el código ahora:"""
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             generated_code = "\n".join(lines)
+        if not generated_code:
+            return {"ok": False, "error": "LLM devolvió código vacío"}
         
         # Determinar ruta del archivo
         if not file_path:

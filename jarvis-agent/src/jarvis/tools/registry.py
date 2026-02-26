@@ -69,6 +69,7 @@ def build_default_registry() -> ToolRegistry:
         datetime_tool,
         weather,
         cad_generator,
+        routines,
     )
 
     registry = ToolRegistry()
@@ -400,6 +401,26 @@ def build_default_registry() -> ToolRegistry:
                 ),
                 "max_retries": "Número máximo de intentos de generación (opcional, default 3)",
                 "open_viewer": "Abrir el STL en el visor por defecto al terminar (bool, opcional, default false)",
+            },
+        )
+    )
+
+    # 20. Routines
+    registry.register(
+        ToolSpec(
+            name="routines",
+            description=(
+                "Lee y actualiza el horario y rutinas personales del usuario. "
+                "Acciones: get (leer hoy o un día), set_day (reemplazar día completo), "
+                "add (añadir rutina a un día o a las diarias), remove (eliminar), list_all (ver semana)."
+            ),
+            fn=routines.routines_tool,
+            schema={
+                "action": "get, set_day, add, remove, list_all (obligatorio)",
+                "day": "Día en inglés (monday, tuesday, ...) o 'today' (opcional)",
+                "item": "Rutina a añadir o eliminar (para add/remove)",
+                "items": "Lista completa de rutinas para set_day",
+                "daily": "Si true, opera sobre rutinas diarias (todos los días)",
             },
         )
     )

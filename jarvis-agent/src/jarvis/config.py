@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     gesture_debug: bool = Field(default=False, alias="GESTURE_DEBUG")
     gesture_camera_index: int = Field(default=0, alias="GESTURE_CAMERA_INDEX")
 
+    # --- VAD avanzado (Silero + pre-buffer + adaptive noise) ---
+    vad_engine: str        = Field(default="silero", alias="VAD_ENGINE")           # "silero" | "rms"
+    vad_silence_ms: int    = Field(default=480,       alias="VAD_SILENCE_MS")      # ms de silencio para cortar
+    vad_pre_buffer_ms: int = Field(default=1500,      alias="VAD_PRE_BUFFER_MS")   # ms de ring buffer pre-wake
+    wake_beep: bool        = Field(default=True,      alias="WAKE_BEEP")           # beep al detectar wake word
+
+    # --- Camera context (face detection + object analysis) ---
+    camera_context_enabled: bool  = Field(default=False, alias="CAMERA_CONTEXT")
+    camera_context_index: int     = Field(default=0,     alias="CAMERA_CONTEXT_INDEX")
+    camera_context_interval_s: float = Field(default=5.0, alias="CAMERA_CONTEXT_INTERVAL")
+    camera_context_face_only: bool   = Field(default=False, alias="CAMERA_CONTEXT_FACE_ONLY")
+
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
 

@@ -8,8 +8,9 @@ Detección de wake word con dos motores:
 
 from __future__ import annotations
 
+import collections
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -32,6 +33,7 @@ class WakeWordConfig:
     oww_min_consecutive_hits: int = 2   # detecciones seguidas para disparar
     oww_activation_cooldown_sec: float = 1.5
     oww_score_ema_alpha: float = 0.6
+    oww_pre_buffer_ms: int = 1500       # ms de audio guardado antes del trigger (ring buffer)
     # Porcupine (solo si engine="porcupine")
     access_key: str = ""
     keyword: str = "jarvis"
@@ -58,6 +60,9 @@ class OpenWakeWordListener:
         self._hit_streak: int = 0
         self._last_trigger_ts: float = 0.0
         self._debug_tick: int = 0
+        # Ring buffer pre-wake: guarda audio continuo antes de la detección
+        _cap = max(1, cfg.oww_pre_buffer_ms * self.SAMPLE_RATE // (1000 * self.CHUNK_SAMPLES))
+        self._pre_buffer: collections.deque = collections.deque(maxlen=_cap)
 
     def _update_detection_state(self, score: float, rms: float) -> bool:
         """
@@ -134,6 +139,16 @@ class OpenWakeWordListener:
         )
         self._stream.start()
 
+    def get_prebuffer(self) -> list:
+        """
+        Vuelca y limpia el ring buffer de audio pre-wake.
+        Llamar inmediatamente tras detectar la wake word.
+        Retorna lista de np.ndarray (int16, shape [CHUNK_SAMPLES, 1]).
+        """
+        chunks = list(self._pre_buffer)
+        self._pre_buffer.clear()
+        return chunks
+
     def stop(self) -> None:
         if self._stream is not None:
             try:
@@ -160,6 +175,9 @@ class OpenWakeWordListener:
 
             if overflowed:
                 continue
+
+            # Guardar en ring buffer ANTES de procesar (captura audio pre-trigger)
+            self._pre_buffer.append(audio_chunk.copy())
 
             audio_flat = audio_chunk.flatten()
             rms = float(np.sqrt(np.mean(audio_flat.astype(np.float32) ** 2)))
@@ -267,3 +285,9 @@ class WakeWordListener:
 
     def wait_for_wake(self, *, timeout_sec: Optional[float] = None) -> bool:
         return self._impl.wait_for_wake(timeout_sec=timeout_sec)
+
+    def get_prebuffer(self) -> list:
+        """Delega al impl si soporta pre-buffer (OpenWakeWord). Porcupine retorna []."""
+        if hasattr(self._impl, "get_prebuffer"):
+            return self._impl.get_prebuffer()
+        return []

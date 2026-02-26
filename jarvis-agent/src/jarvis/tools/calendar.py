@@ -70,6 +70,109 @@ def create_calendar_event(
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def get_calendar_events_today() -> list:
+    """
+    Lee eventos de Calendar.app para hoy.
+    Retorna lista de strings "HH:MM - Nombre evento" ordenados por hora.
+    Retorna [] si hay error o no hay eventos.
+    """
+    script = '''
+    tell application "Calendar"
+        set todayStart to current date
+        set time of todayStart to 0
+        set todayEnd to todayStart + (1 * days)
+        set output to ""
+        set eventList to {}
+        repeat with cal in calendars
+            set calEvents to (every event of cal whose start date >= todayStart and start date < todayEnd)
+            set eventList to eventList & calEvents
+        end repeat
+        repeat with evt in eventList
+            set h to hours of start date of evt
+            set m to minutes of start date of evt
+            set mStr to m as string
+            if m < 10 then set mStr to "0" & mStr
+            set output to output & (h as string) & ":" & mStr & "|||" & summary of evt & "~~~"
+        end repeat
+        return output
+    end tell
+    '''
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        events = []
+        for chunk in result.stdout.strip().split("~~~"):
+            chunk = chunk.strip()
+            if "|||" in chunk:
+                time_str, name = chunk.split("|||", 1)
+                events.append(f"{time_str.strip()} - {name.strip()}")
+        events.sort()
+        return events
+    except Exception:
+        return []
+
+
+def get_reminders_today() -> list:
+    """
+    Lee recordatorios pendientes de Reminders.app.
+    - Con fecha: los que vencen hoy o están atrasados (due <= fin de hoy)
+    - Sin fecha: hasta 3 (los más recientes, como backlog)
+    Retorna [] si hay error.
+    """
+    script = '''
+    tell application "Reminders"
+        set todayEnd to current date
+        set time of todayEnd to (23 * hours + 59 * minutes + 59)
+        set datedOut to ""
+        set undatedOut to ""
+        set undatedCount to 0
+        repeat with aList in lists
+            try
+                repeat with r in (every reminder of aList whose completed is false)
+                    try
+                        set d to due date of r
+                        if d <= todayEnd then
+                            set datedOut to datedOut & (name of r) & "~~~"
+                        end if
+                    on error
+                        if undatedCount < 3 then
+                            set undatedOut to undatedOut & (name of r) & "~~~"
+                            set undatedCount to undatedCount + 1
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+        return datedOut & "|||UNDATED|||" & undatedOut
+    end tell
+    '''
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        raw = result.stdout.strip()
+        dated_part, _, undated_part = raw.partition("|||UNDATED|||")
+        reminders = []
+        for chunk in dated_part.split("~~~"):
+            chunk = chunk.strip()
+            if chunk:
+                reminders.append(chunk)
+        for chunk in undated_part.split("~~~"):
+            chunk = chunk.strip()
+            if chunk:
+                reminders.append(chunk)
+        return reminders
+    except Exception:
+        return []
+
+
 def calendar_query(args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Consulta eventos del calendario de macOS.

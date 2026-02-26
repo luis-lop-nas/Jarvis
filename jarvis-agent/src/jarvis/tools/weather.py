@@ -57,11 +57,16 @@ def run_weather(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": f"Error obteniendo clima: {e}"}
 
     try:
-        current = data["current_condition"][0]
-        nearest = data.get("nearest_area", [{}])[0]
+        current_list = data.get("current_condition", [])
+        if not current_list:
+            return {"ok": False, "error": "API no devolvió condiciones actuales"}
+        current = current_list[0]
 
-        city_name = nearest.get("areaName", [{}])[0].get("value", city)
-        country = nearest.get("country", [{}])[0].get("value", "")
+        nearest_list = data.get("nearest_area", [])
+        nearest = nearest_list[0] if nearest_list else {}
+
+        city_name = (nearest.get("areaName") or [{}])[0].get("value", city)
+        country = (nearest.get("country") or [{}])[0].get("value", "")
 
         temp_c = int(current.get("temp_C", 0))
         feels_c = int(current.get("FeelsLikeC", temp_c))
@@ -71,7 +76,7 @@ def run_weather(args: Dict[str, Any]) -> Dict[str, Any]:
         visibility_km = int(current.get("visibility", 0))
         uv_index = current.get("uvIndex", "N/A")
 
-        desc_raw = current.get("weatherDesc", [{}])[0].get("value", "")
+        desc_raw = (current.get("weatherDesc") or [{}])[0].get("value", "")
         # Intentar código WMO si viene
         wmo = int(current.get("weatherCode", -1))
         desc = _WMO_CODES.get(wmo, desc_raw.lower() or "desconocido")
@@ -102,8 +107,9 @@ def run_weather(args: Dict[str, Any]) -> Dict[str, Any]:
                 max_c = int(day_data.get("maxtempC", 0))
                 min_c = int(day_data.get("mintempC", 0))
                 date_str = day_data.get("date", "")
-                desc_day = day_data.get("hourly", [{}])[4].get(
-                    "weatherDesc", [{}])[0].get("value", "")
+                hourly = day_data.get("hourly", [])
+                hourly_mid = hourly[4] if len(hourly) > 4 else (hourly[-1] if hourly else {})
+                desc_day = (hourly_mid.get("weatherDesc") or [{}])[0].get("value", "")
                 forecast.append({
                     "date": date_str,
                     "max_c": max_c,

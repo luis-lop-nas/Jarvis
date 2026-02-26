@@ -439,6 +439,14 @@ class ToolAgent:
                 self._save_message("assistant", err)
                 return err
 
+            if not response.candidates:
+                err = "Gemini no devolvió candidatos (posible filtro de contenido)."
+                if self.config.debug:
+                    print(f"⚠️ {err}")
+                self.state.add_assistant(err)
+                self._save_message("assistant", err)
+                return err
+
             candidate = response.candidates[0]
             parts = candidate.content.parts
 

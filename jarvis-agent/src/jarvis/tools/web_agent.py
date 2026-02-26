@@ -294,8 +294,8 @@ def _detect_llm_config() -> Optional[Dict]:
             "vision": False,
         }
 
-    # Fallback: cualquier key disponible
-    if anthropic_key:
+    # Fallback: cualquier key disponible (respetando las flags de activación)
+    if anthropic_key and use_claude:
         return {
             "provider": "claude",
             "api_key": anthropic_key,

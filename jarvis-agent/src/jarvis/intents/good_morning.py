@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from jarvis.intents.class_session import get_pending_class_tasks
+from jarvis.tools.calendar import get_calendar_events_today, get_reminders_today
+from jarvis.tools.routines import get_routines_for_today
 
 # ============================================================
 # CONFIG BÁSICA (ajusta rutas si tu proyecto usa otra estructura)
@@ -116,38 +118,27 @@ def get_today_weather_summary() -> str:
     return "Hoy hará fresco por la mañana y más templado por la tarde. No se esperan lluvias importantes."
 
 
-def get_today_classes() -> List[str]:
-    """
-    MVP: horario local simple.
-    Luego lo sustituimos por calendario real.
-    """
-    classes_by_day = {
-        "monday": ["Electro a las 16:00", "Métodos Numéricos a las 18:00"],
-        "tuesday": ["Programación a las 12:00"],
-        "wednesday": ["Electro a las 16:00", "Métodos Numéricos a las 18:00"],
-        "thursday": ["Laboratorio a las 10:00"],
-        "friday": ["Tutoría a las 11:00"],
-        "saturday": [],
-        "sunday": [],
-    }
-    return classes_by_day.get(_weekday_key_es(), [])
-
-
 def get_pending_reminders() -> List[str]:
     """
     Pendientes combinados:
+    - recordatorios de Reminders.app (con fecha hoy/atrasados + 3 sin fecha)
     - tareas detectadas en sesiones de clase
     - TODOs internos de Jarvis
     """
     reminders: List[str] = []
-    reminders.extend(get_pending_class_tasks(limit=5))
-
-    for todo in get_jarvis_todos(limit=3):
+    # Real Reminders.app
+    reminders.extend(get_reminders_today())
+    # Clase sessions (si el módulo está disponible)
+    try:
+        reminders.extend(get_pending_class_tasks(limit=3))
+    except Exception:
+        pass
+    # Jarvis TODOs internos
+    for todo in get_jarvis_todos(limit=2):
         text = str(todo.get("text", "")).strip()
-        if text:
+        if text and text not in reminders:
             reminders.append(text)
-
-    return reminders
+    return reminders[:6]
 
 
 def get_relevant_notes_for_today() -> List[str]:
@@ -204,17 +195,27 @@ def _build_weather_block() -> str:
     return weather
 
 
-def _build_classes_block() -> str:
-    classes = get_today_classes()
-    if not classes:
-        return "Hoy no tiene clases registradas."
-    if len(classes) == 1:
-        return f"Hoy tiene {classes[0]}."
-    # Une bonito en español
-    if len(classes) == 2:
-        return f"Hoy tiene {classes[0]} y después {classes[1]}."
-    joined = ", ".join(classes[:-1]) + f" y {classes[-1]}"
-    return f"Hoy tiene {joined}."
+def _build_calendar_block() -> str:
+    """Lee eventos reales de Calendar.app + rutinas del día."""
+    events = get_calendar_events_today()
+    routines = get_routines_for_today()
+
+    parts = []
+
+    if events:
+        if len(events) == 1:
+            parts.append(f"En el calendario tiene {events[0]}.")
+        else:
+            joined = ", ".join(events[:-1]) + f" y {events[-1]}"
+            parts.append(f"En el calendario tiene {joined}.")
+    else:
+        parts.append("Hoy no tiene eventos en el calendario.")
+
+    if routines:
+        joined_r = ", ".join(routines[:3])
+        parts.append(f"En rutinas: {joined_r}.")
+
+    return " ".join(parts)
 
 
 def _build_tasks_block() -> str:
@@ -284,7 +285,7 @@ def run_morning_briefing(force_full: bool = False) -> MorningBriefingResult:
 
     salute = _build_salute_block()
     weather = _build_weather_block()
-    classes = _build_classes_block()
+    calendar_block = _build_calendar_block()
     tasks = _build_tasks_block()
     fact = _build_fact_block()
     final_q = _build_final_question_block()
@@ -292,7 +293,7 @@ def run_morning_briefing(force_full: bool = False) -> MorningBriefingResult:
     blocks = [
         salute,
         weather,
-        classes,
+        calendar_block,
         tasks,
         fact["fact"],
         final_q
