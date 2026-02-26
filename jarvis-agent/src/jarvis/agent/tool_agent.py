@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import requests
+from pydantic import ValidationError
 
 from jarvis.agent.confirm_policy import (
     extract_confirm_token,
@@ -32,6 +33,8 @@ from jarvis.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_GROQ
 from jarvis.agent.runner import AgentConfig
 from jarvis.agent.state import AgentState, truncate_history
 from jarvis.agent.verifier import VerifyContext, verify
+from jarvis.tools.schemas.base import normalize_tool_output
+from jarvis.tools.schemas.errors import build_validation_error_payload
 from jarvis.tools.shell_guard import analyze_shell_command
 from jarvis.tools.registry import ToolRegistry, build_default_registry
 
@@ -81,6 +84,16 @@ class ToolAgentConfig(AgentConfig):
     verifier_max_items: int = 50
     verifier_sample_if_over: int = 200
     verifier_strict: bool = False
+    # Tool schema validation
+    tool_schema_validation_enabled: bool = True
+    tool_schema_strict: bool = True
+    tool_schema_log_invalid: bool = False
+    # PEV Pipeline
+    pev_enabled: bool = False
+    pev_max_steps: int = 6
+    pev_retry_max: int = 1
+    pev_state_ttl_seconds: int = 600
+    pev_verbose_trace: bool = False
 
 
 class ToolAgent:
@@ -230,11 +243,63 @@ class ToolAgent:
         out["verified"] = status == "ok"
         return out
 
+    def _validate_tool_input(self, tool_name: str, tool_args: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if not self.config.tool_schema_validation_enabled:
+            return tool_args, None
+        spec = self.registry.get(tool_name)
+        if not spec or spec.input_model is None:
+            return tool_args, None
+        try:
+            parsed = spec.input_model.model_validate(tool_args)
+            return parsed.model_dump(exclude_none=True), None
+        except ValidationError as e:
+            return None, build_validation_error_payload(
+                tool=tool_name,
+                stage="input",
+                err=e,
+                message="Faltan campos o el formato de entrada es inválido.",
+                include_raw=False,
+            )
+
+    def _validate_tool_output(self, tool_name: str, raw_output: Any) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        normalized = normalize_tool_output(tool_name, raw_output)
+        if not self.config.tool_schema_validation_enabled:
+            return normalized, None
+        spec = self.registry.get(tool_name)
+        if not spec or spec.output_model is None:
+            return normalized, None
+        try:
+            parsed = spec.output_model.model_validate(normalized)
+            return parsed.model_dump(exclude_none=True), None
+        except ValidationError as e:
+            payload = build_validation_error_payload(
+                tool=tool_name,
+                stage="output",
+                err=e,
+                message="La tool devolvió un resultado inesperado.",
+                raw_output=normalized,
+                include_raw=self.config.tool_schema_log_invalid,
+            )
+            if self.config.tool_schema_strict:
+                return None, payload
+            normalized["schema_warning"] = payload
+            return normalized, None
+
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
-        tool_out = self.registry.call(tool_name, tool_args)
-        verified_out = self._verify_tool_result(tool_name, tool_args, tool_out)
+        validated_args, input_err = self._validate_tool_input(tool_name, tool_args)
+        if input_err is not None:
+            return input_err
+        args_to_use = validated_args if validated_args is not None else tool_args
+
+        raw_tool_out = self.registry.call(tool_name, args_to_use)
+        normalized_out, output_err = self._validate_tool_output(tool_name, raw_tool_out)
+        if output_err is not None:
+            return output_err
+
+        tool_out = normalized_out if normalized_out is not None else normalize_tool_output(tool_name, raw_tool_out)
+        verified_out = self._verify_tool_result(tool_name, args_to_use, tool_out)
         self.intent_tracker.on_tool_executed(tool_name)
-        self._save_tool_event(tool_name, tool_args, verified_out)
+        self._save_tool_event(tool_name, args_to_use, verified_out)
         return verified_out
 
     # ------------------------------------------------------------------
@@ -1217,7 +1282,7 @@ def tool_agent_from_settings(
     registry: Optional[ToolRegistry] = None,
     memory_store: Optional[Any] = None,
     paths: Optional[Any] = None,
-) -> ToolAgent:
+):
     """Construye ToolAgent desde Settings."""
     def _parse_list(raw: Any) -> List[str]:
         if isinstance(raw, str):
@@ -1267,11 +1332,23 @@ def tool_agent_from_settings(
         verifier_max_items=int(getattr(settings, "verifier_max_items", 50)),
         verifier_sample_if_over=int(getattr(settings, "verifier_sample_if_over", 200)),
         verifier_strict=bool(getattr(settings, "verifier_strict", False)),
+        tool_schema_validation_enabled=bool(getattr(settings, "tool_schema_validation_enabled", True)),
+        tool_schema_strict=bool(getattr(settings, "tool_schema_strict", True)),
+        tool_schema_log_invalid=bool(getattr(settings, "tool_schema_log_invalid", False)),
+        pev_enabled=bool(getattr(settings, "pev_enabled", False)),
+        pev_max_steps=int(getattr(settings, "pev_max_steps", 6)),
+        pev_retry_max=int(getattr(settings, "pev_retry_max", 1)),
+        pev_state_ttl_seconds=int(getattr(settings, "pev_state_ttl_seconds", 600)),
+        pev_verbose_trace=bool(getattr(settings, "pev_verbose_trace", False)),
     )
     confirm_context = {
         "project_root": getattr(paths, "project_root", Path.cwd()),
         "data_dir": getattr(paths, "data_dir", Path.cwd() / "data"),
     }
+    if cfg.pev_enabled:
+        from jarvis.agent.pev_agent import PEVAgent  # lazy import — evita circular
+        return PEVAgent(cfg, registry=registry, memory_store=memory_store,
+                        confirm_context=confirm_context)
     return ToolAgent(
         cfg,
         registry=registry,

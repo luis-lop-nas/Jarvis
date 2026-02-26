@@ -7,7 +7,9 @@ Registro centralizado de herramientas.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Type
+
+from pydantic import BaseModel
 
 
 @dataclass
@@ -17,6 +19,8 @@ class ToolSpec:
     description: str
     fn: Callable[..., Dict[str, Any]]
     schema: Optional[Dict[str, str]] = None
+    input_model: Optional[Type[BaseModel]] = None
+    output_model: Optional[Type[BaseModel]] = None
 
 
 class ToolRegistry:
@@ -32,6 +36,22 @@ class ToolRegistry:
     def list(self) -> Dict[str, ToolSpec]:
         """Lista todas las herramientas."""
         return self._tools.copy()
+
+    def get(self, name: str) -> Optional[ToolSpec]:
+        """Obtiene ToolSpec por nombre."""
+        return self._tools.get(name)
+
+    def set_contract(
+        self,
+        name: str,
+        input_model: Optional[Type[BaseModel]],
+        output_model: Optional[Type[BaseModel]],
+    ) -> None:
+        spec = self._tools.get(name)
+        if not spec:
+            return
+        spec.input_model = input_model
+        spec.output_model = output_model
 
     def call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Ejecuta una herramienta por nombre."""
@@ -424,5 +444,14 @@ def build_default_registry() -> ToolRegistry:
             },
         )
     )
+
+    # Contratos de schemas (input/output) para TODAS las tools
+    from jarvis.tools.schemas.contracts import get_contract
+
+    for tool_name in registry.list().keys():
+        contract = get_contract(tool_name)
+        if contract is None:
+            continue
+        registry.set_contract(tool_name, contract.input_model, contract.output_model)
 
     return registry

@@ -131,6 +131,18 @@ class Settings(BaseSettings):
     verifier_sample_if_over: int = Field(default=200, alias="VERIFIER_SAMPLE_IF_OVER")
     verifier_strict: bool = Field(default=False, alias="VERIFIER_STRICT")
 
+    # --- Tool schema validation ---
+    tool_schema_validation_enabled: bool = Field(default=True, alias="TOOL_SCHEMA_VALIDATION_ENABLED")
+    tool_schema_strict: bool = Field(default=True, alias="TOOL_SCHEMA_STRICT")
+    tool_schema_log_invalid: bool = Field(default=False, alias="TOOL_SCHEMA_LOG_INVALID")
+
+    # --- PEV Pipeline (Planner → Executor → Verifier) ---
+    pev_enabled: bool = Field(default=False, alias="PEV_ENABLED")
+    pev_max_steps: int = Field(default=6, alias="PEV_MAX_STEPS")
+    pev_retry_max: int = Field(default=1, alias="PEV_RETRY_MAX")
+    pev_state_ttl_seconds: int = Field(default=600, alias="PEV_STATE_TTL_SECONDS")
+    pev_verbose_trace: bool = Field(default=False, alias="PEV_VERBOSE_TRACE")
+
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
 

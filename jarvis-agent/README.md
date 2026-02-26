@@ -114,3 +114,37 @@ VERIFIER_MAX_ITEMS=50
 VERIFIER_SAMPLE_IF_OVER=200
 VERIFIER_STRICT=false
 ```
+
+## Tool Schemas (Pydantic)
+
+Validación central de entrada/salida en el dispatcher:
+- `src/jarvis/tools/schemas/`
+  - `base.py` (ToolOutput + normalización)
+  - `errors.py` (payload de errores de validación)
+  - `tool_contract.py` (ToolContract)
+  - `contracts.py` (mapping de las 21 tools)
+
+Si falla input:
+- `type="tool_validation_error"`, `stage="input"` y la tool no se ejecuta.
+
+Si falla output:
+- `type="tool_validation_error"`, `stage="output"` (strict) o warning embebido (no strict).
+
+Configuración:
+
+```env
+TOOL_SCHEMA_VALIDATION_ENABLED=true
+TOOL_SCHEMA_STRICT=true
+TOOL_SCHEMA_LOG_INVALID=false
+```
+
+Cómo añadir una tool nueva:
+1. Crear `InputModel` y `OutputModel` en `src/jarvis/tools/schemas/contracts.py`.
+2. Registrar `ToolContract` para el nombre de la tool.
+3. Registrar la tool en `registry.py` (el contrato se adjunta automáticamente).
+4. Añadir tests de input/output inválido y caso válido.
+
+Fase 2 (endurecimiento progresivo):
+- Revisar campos opcionales -> obligatorios tool por tool.
+- Añadir `Literal`/rangos para enums y parámetros numéricos.
+- Modelar `data` de `ToolOutput` de forma más específica por herramienta.
