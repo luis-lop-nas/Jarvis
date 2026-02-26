@@ -164,11 +164,18 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="calendar",
-            description="Consulta calendario: today, tomorrow, week, create (recordatorio)",
+            description=(
+                "Consulta calendario: today, tomorrow, week, "
+                "create (recordatorio), create_event (evento real)"
+            ),
             fn=calendar.calendar_query,
             schema={
-                "action": "today, tomorrow, week, create (obligatorio)",
-                "query": "Título del recordatorio (para create)",
+                "action": "today, tomorrow, week, create, create_event (obligatorio)",
+                "query": "Título del recordatorio/evento (para create/create_event)",
+                "date": "Fecha YYYY-MM-DD (para create_event)",
+                "time": "Hora HH:MM 24h (para create_event, opcional)",
+                "duration_minutes": "Duración en minutos int (para create_event, opcional)",
+                "notes": "Notas/descripcion del evento (para create_event, opcional)",
             },
         )
     )

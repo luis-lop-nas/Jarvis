@@ -57,6 +57,7 @@ class OpenWakeWordListener:
         self._score_ema: float = 0.0
         self._hit_streak: int = 0
         self._last_trigger_ts: float = 0.0
+        self._debug_tick: int = 0
 
     def _update_detection_state(self, score: float, rms: float) -> bool:
         """
@@ -91,6 +92,14 @@ class OpenWakeWordListener:
                 f"  [wake] raw={score:.3f} ema={self._score_ema:.3f} "
                 f"rms={rms:.1f} streak={self._hit_streak} umbral={threshold:.2f}"
             )
+        elif self.cfg.debug:
+            # Heartbeat de calibracion para ver si entra audio y como evoluciona el score.
+            self._debug_tick += 1
+            if self._debug_tick % 12 == 0:
+                print(
+                    f"  [wake] raw={score:.3f} ema={self._score_ema:.3f} "
+                    f"rms={rms:.1f} streak={self._hit_streak} umbral={threshold:.2f}"
+                )
 
         if self._hit_streak >= max(1, int(self.cfg.oww_min_consecutive_hits)):
             self._last_trigger_ts = now

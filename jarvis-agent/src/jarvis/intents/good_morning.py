@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from jarvis.intents.class_session import get_pending_class_tasks
 
 # ============================================================
 # CONFIG BÁSICA (ajusta rutas si tu proyecto usa otra estructura)
@@ -134,12 +135,19 @@ def get_today_classes() -> List[str]:
 
 def get_pending_reminders() -> List[str]:
     """
-    MVP (mock):
-    Luego conectamos Apple Reminders / lista real.
+    Pendientes combinados:
+    - tareas detectadas en sesiones de clase
+    - TODOs internos de Jarvis
     """
-    return [
-        "Reilich ha mandado mejorar el código de Newton-Raphson.",
-    ]
+    reminders: List[str] = []
+    reminders.extend(get_pending_class_tasks(limit=5))
+
+    for todo in get_jarvis_todos(limit=3):
+        text = str(todo.get("text", "")).strip()
+        if text:
+            reminders.append(text)
+
+    return reminders
 
 
 def get_relevant_notes_for_today() -> List[str]:

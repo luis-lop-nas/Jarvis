@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     wake_word_engine: str = Field(default="openwakeword", alias="WAKE_WORD_ENGINE")  # openwakeword | porcupine
     wake_word_model: str = Field(default="hey_jarvis", alias="WAKE_WORD_MODEL")      # modelo oww
     wake_word_sensitivity: float = Field(default=0.5, alias="WAKE_WORD_SENSITIVITY")
+    wake_word_device: Optional[int] = Field(default=None, alias="WAKE_WORD_DEVICE")
     wake_word_debug: bool = Field(default=False, alias="WAKE_WORD_DEBUG")
     wake_word_min_rms: float = Field(default=120.0, alias="WAKE_WORD_MIN_RMS")
     wake_word_min_hits: int = Field(default=2, alias="WAKE_WORD_MIN_HITS")
