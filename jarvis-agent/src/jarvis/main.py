@@ -45,6 +45,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Activa modo debug.",
     )
+    p.add_argument(
+        "--install-autostart",
+        action="store_true",
+        help="Instala autoarranque de Jarvis Desktop al iniciar sesión (macOS).",
+    )
+    p.add_argument(
+        "--uninstall-autostart",
+        action="store_true",
+        help="Desinstala autoarranque de Jarvis Desktop (macOS).",
+    )
+    p.add_argument(
+        "--autostart-status",
+        action="store_true",
+        help="Muestra estado del autoarranque de Jarvis Desktop (macOS).",
+    )
+    p.add_argument(
+        "--restart-autostart",
+        action="store_true",
+        help="Reinicia (reinstala) autoarranque de Jarvis Desktop (macOS).",
+    )
+    p.add_argument(
+        "--doctor-desktop",
+        action="store_true",
+        help="Diagnóstico de estado desktop (autoarranque/permisos) en macOS.",
+    )
     return p
 
 
@@ -56,6 +81,65 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.debug:
         settings.debug = True  # type: ignore[attr-defined]
+
+    if args.install_autostart:
+        from jarvis.desktop.autostart import install_launch_agent
+
+        ok, msg, plist = install_launch_agent(
+            project_root=paths.project_root,
+            logs_dir=paths.logs_dir,
+        )
+        print(msg)
+        print(f"plist: {plist}")
+        return 0 if ok else 1
+
+    if args.uninstall_autostart:
+        from jarvis.desktop.autostart import uninstall_launch_agent
+
+        ok, msg, plist = uninstall_launch_agent()
+        print(msg)
+        print(f"plist: {plist}")
+        return 0 if ok else 1
+
+    if args.autostart_status:
+        from jarvis.desktop.autostart import get_autostart_status
+
+        st = get_autostart_status()
+        print(f"label: {st.label}")
+        print(f"installed: {st.installed}")
+        print(f"loaded: {st.loaded}")
+        print(f"plist: {st.plist_path}")
+        if st.error:
+            print(f"detail: {st.error}")
+        return 0
+
+    if args.restart_autostart:
+        from jarvis.desktop.autostart import restart_launch_agent
+
+        ok, msg, plist = restart_launch_agent(
+            project_root=paths.project_root,
+            logs_dir=paths.logs_dir,
+        )
+        print(msg)
+        print(f"plist: {plist}")
+        return 0 if ok else 1
+
+    if args.doctor_desktop:
+        from jarvis.desktop.doctor import doctor_result_to_dict, run_desktop_doctor
+
+        report = doctor_result_to_dict(run_desktop_doctor())
+        print(f"platform: {report['platform']}")
+        print(f"autostart_installed: {report['autostart_installed']}")
+        print(f"autostart_loaded: {report['autostart_loaded']}")
+        print(f"microphone: {report['microphone']}")
+        print(f"accessibility: {report['accessibility']}")
+        if report["issues"]:
+            print("issues:")
+            for issue in report["issues"]:
+                print(f"- {issue}")
+        else:
+            print("issues: none")
+        return 0 if report["ok"] else 1
 
     # Modo DESKTOP (macOS overlay + voz + LLM)
     if args.desktop:

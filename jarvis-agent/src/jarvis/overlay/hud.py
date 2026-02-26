@@ -8,8 +8,8 @@ Aparece centrado en la parte inferior de la pantalla cuando Jarvis responde.
 Características:
   - Fondo oscuro #080810 con bordes en color acento (cambia con el estado)
   - Esquinas biseladas (chamfer): top-right y bottom-left cortadas 14px
-  - Header  ◈ JARVIS  con punto pulsante animado
-  - Texto en SF Mono con efecto typewriter + cursor █ parpadeante
+  - Header [JARVIS CORE] con punto pulsante animado
+  - Texto monoespaciado con efecto typewriter + cursor █ parpadeante
   - Click-through — no captura eventos de ratón
   - Visible en todos los Spaces
   - Fade-out automático FADE_DELAY segundos tras terminar el TTS
@@ -59,7 +59,7 @@ class _HUDBg(AppKit.NSView):
         self = objc.super(_HUDBg, self).initWithFrame_(frame)
         if self is None:
             return None
-        self._accent = (0.0, 1.0, 0.878)   # cyan por defecto
+        self._accent = (0.35, 1.0, 0.42)   # verde terminal por defecto
         return self
 
     @objc.python_method
@@ -207,7 +207,7 @@ class JarvisHUD:
         self._dot:    Optional[_PulsingDot]    = None
         self._label:  Optional[AppKit.NSTextField] = None
 
-        self._accent = (0.0, 1.0, 0.878)   # cyan por defecto
+        self._accent = (0.35, 1.0, 0.42)   # verde terminal por defecto
 
         # estado del typewriter
         self._full_text   = ''
@@ -290,7 +290,7 @@ class JarvisHUD:
         self._bg.set_accent(ar, ag, ab)
         self._window.setContentView_(self._bg)
 
-        # Header: dot + ◈ JARVIS
+        # Header: dot + [JARVIS CORE]
         _DOT_SIZE = 6
         _HEADER_Y = h - 22
 
@@ -301,7 +301,7 @@ class JarvisHUD:
         self._bg.addSubview_(self._dot)
 
         mono_font = (
-            AppKit.NSFont.fontWithName_size_('SF Mono', 9.0) or
+            AppKit.NSFont.fontWithName_size_('Monaco', 9.0) or
             AppKit.NSFont.fontWithName_size_('Menlo', 9.0) or
             AppKit.NSFont.monospacedSystemFontOfSize_weight_(9.0, AppKit.NSFontWeightRegular)
         )
@@ -309,13 +309,13 @@ class JarvisHUD:
             AppKit.NSMakeRect(self.PADDING_X + _DOT_SIZE + 6, _HEADER_Y - 1,
                               200, 14)
         )
-        header_lbl.setStringValue_('◈ JARVIS')
+        header_lbl.setStringValue_('[JARVIS CORE]')
         header_lbl.setBezeled_(False)
         header_lbl.setDrawsBackground_(False)
         header_lbl.setEditable_(False)
         header_lbl.setSelectable_(False)
         header_lbl.setFont_(
-            AppKit.NSFont.fontWithName_size_('SF Mono', 9.0) or
+            AppKit.NSFont.fontWithName_size_('Monaco', 9.0) or
             AppKit.NSFont.monospacedSystemFontOfSize_weight_(9.0, AppKit.NSFontWeightBold)
         )
         header_lbl.setTextColor_(
@@ -326,7 +326,7 @@ class JarvisHUD:
 
         # Label de texto principal
         txt_font = (
-            AppKit.NSFont.fontWithName_size_('SF Mono', 11.0) or
+            AppKit.NSFont.fontWithName_size_('Monaco', 11.0) or
             AppKit.NSFont.fontWithName_size_('Menlo', 11.0) or
             AppKit.NSFont.monospacedSystemFontOfSize_weight_(11.0, AppKit.NSFontWeightRegular)
         )
@@ -343,7 +343,7 @@ class JarvisHUD:
         self._label.setSelectable_(False)
         self._label.setFont_(txt_font)
         self._label.setTextColor_(
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.88, 0.94, 1.0, 0.92)
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.78, 1.0, 0.80, 0.92)
         )
         self._label.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
         self._label.setMaximumNumberOfLines_(6)

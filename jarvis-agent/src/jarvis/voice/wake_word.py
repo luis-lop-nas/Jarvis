@@ -25,8 +25,13 @@ class WakeWordConfig:
     engine: str = "openwakeword"        # "openwakeword" | "porcupine"
     sensitivity: float = 0.5
     device_index: Optional[int] = None
+    debug: bool = False
     # OpenWakeWord
     oww_model: str = "hey_jarvis"       # modelo preentrenado a usar
+    oww_min_rms: float = 120.0          # filtro anti-ruido (int16 RMS)
+    oww_min_consecutive_hits: int = 2   # detecciones seguidas para disparar
+    oww_activation_cooldown_sec: float = 1.5
+    oww_score_ema_alpha: float = 0.6
     # Porcupine (solo si engine="porcupine")
     access_key: str = ""
     keyword: str = "jarvis"
@@ -49,6 +54,50 @@ class OpenWakeWordListener:
         self.cfg = cfg
         self._stream: Optional[sd.InputStream] = None
         self._model = None
+        self._score_ema: float = 0.0
+        self._hit_streak: int = 0
+        self._last_trigger_ts: float = 0.0
+
+    def _update_detection_state(self, score: float, rms: float) -> bool:
+        """
+        Devuelve True solo cuando la detección es estable:
+        - RMS mínimo (evita activar con ruido ambiente)
+        - score suavizado (EMA)
+        - N hits consecutivos
+        - cooldown entre activaciones
+        """
+        now = time.monotonic()
+
+        # En cooldown, ignorar activaciones nuevas
+        if now - self._last_trigger_ts < max(0.0, float(self.cfg.oww_activation_cooldown_sec)):
+            return False
+
+        # Sin energía de voz suficiente no acumulamos hits
+        if rms < max(0.0, float(self.cfg.oww_min_rms)):
+            self._hit_streak = 0
+            return False
+
+        alpha = min(1.0, max(0.0, float(self.cfg.oww_score_ema_alpha)))
+        self._score_ema = alpha * float(score) + (1.0 - alpha) * self._score_ema
+        threshold = min(1.0, max(0.0, float(self.cfg.sensitivity)))
+
+        if self._score_ema >= threshold:
+            self._hit_streak += 1
+        else:
+            self._hit_streak = 0
+
+        if self.cfg.debug and (self._hit_streak > 0 or score >= threshold * 0.75):
+            print(
+                f"  [wake] raw={score:.3f} ema={self._score_ema:.3f} "
+                f"rms={rms:.1f} streak={self._hit_streak} umbral={threshold:.2f}"
+            )
+
+        if self._hit_streak >= max(1, int(self.cfg.oww_min_consecutive_hits)):
+            self._last_trigger_ts = now
+            self._hit_streak = 0
+            return True
+
+        return False
 
     def start(self) -> None:
         try:
@@ -89,9 +138,9 @@ class OpenWakeWordListener:
         if self._model is None or self._stream is None:
             raise RuntimeError("OpenWakeWordListener no iniciado. Llama start() primero.")
 
-        t0 = time.time()
+        t0 = time.monotonic()
         while True:
-            if timeout_sec is not None and (time.time() - t0) > timeout_sec:
+            if timeout_sec is not None and (time.monotonic() - t0) > timeout_sec:
                 return False
 
             try:
@@ -104,12 +153,11 @@ class OpenWakeWordListener:
                 continue
 
             audio_flat = audio_chunk.flatten()
+            rms = float(np.sqrt(np.mean(audio_flat.astype(np.float32) ** 2)))
             prediction = self._model.predict(audio_flat)
 
             for score in prediction.values():
-                if score >= 0.05:   # mostrar activaciones notables para debug
-                    print(f"  [wake] score={score:.3f} (umbral={self.cfg.sensitivity:.2f})")
-                if score >= self.cfg.sensitivity:
+                if self._update_detection_state(float(score), rms):
                     return True
 
 

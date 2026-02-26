@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     wake_word_engine: str = Field(default="openwakeword", alias="WAKE_WORD_ENGINE")  # openwakeword | porcupine
     wake_word_model: str = Field(default="hey_jarvis", alias="WAKE_WORD_MODEL")      # modelo oww
     wake_word_sensitivity: float = Field(default=0.5, alias="WAKE_WORD_SENSITIVITY")
+    wake_word_debug: bool = Field(default=False, alias="WAKE_WORD_DEBUG")
+    wake_word_min_rms: float = Field(default=120.0, alias="WAKE_WORD_MIN_RMS")
+    wake_word_min_hits: int = Field(default=2, alias="WAKE_WORD_MIN_HITS")
+    wake_word_cooldown: float = Field(default=1.5, alias="WAKE_WORD_COOLDOWN")
+    wake_word_score_ema_alpha: float = Field(default=0.6, alias="WAKE_WORD_SCORE_EMA_ALPHA")
     porcupine_access_key: str = Field(default="", alias="PORCUPINE_ACCESS_KEY")      # solo si engine=porcupine
     wake_word: str = Field(default="jarvis", alias="WAKE_WORD")
 

@@ -75,6 +75,12 @@ dev = [
   "mypy>=1.10.0",
 ]
 
+# Control por gestos (cámara)
+gestures = [
+  "mediapipe>=0.10.14",
+  "opencv-python>=4.10.0.84",
+]
+
 # Si luego quieres automatizar navegador (para búsquedas y acciones en web)
 browser = [
   "playwright>=1.46.0",

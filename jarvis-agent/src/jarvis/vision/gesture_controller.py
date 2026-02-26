@@ -495,13 +495,27 @@ def build_gesture_controller(settings: Any, daemon: Any) -> Optional[GestureCont
     if not cfg.enabled:
         return None
 
+    enqueue = getattr(daemon, "enqueue_gesture_event", None)
+    if callable(enqueue):
+        return GestureController(
+            cfg=cfg,
+            on_interrupt=lambda: enqueue("interrupt"),
+            on_pause=lambda: enqueue("pause"),
+            on_resume=lambda: enqueue("resume"),
+            on_confirm=lambda: enqueue("confirm"),
+            on_voice=lambda: enqueue("voice"),
+            on_yes=lambda: enqueue("yes"),
+            on_no=lambda: enqueue("no"),
+        )
+
+    # Fallback retrocompatible si el daemon aún no expone queue de gestos.
     return GestureController(
         cfg=cfg,
-        on_interrupt=getattr(daemon, "interrupt",       lambda: None),
-        on_pause    =getattr(daemon, "pause_gesture",   lambda: None),
-        on_resume   =getattr(daemon, "resume_gesture",  lambda: None),
-        on_confirm  =lambda: daemon.submit_text("sí, confirmo"),
-        on_voice    =getattr(daemon, "trigger_voice_input", lambda: None),
-        on_yes      =lambda: daemon.submit_text("sí"),
-        on_no       =lambda: daemon.submit_text("no, cancela"),
+        on_interrupt=getattr(daemon, "interrupt", lambda: None),
+        on_pause=getattr(daemon, "pause_gesture", lambda: None),
+        on_resume=getattr(daemon, "resume_gesture", lambda: None),
+        on_confirm=lambda: daemon.submit_text("sí, confirmo"),
+        on_voice=getattr(daemon, "trigger_voice_input", lambda: None),
+        on_yes=lambda: daemon.submit_text("sí"),
+        on_no=lambda: daemon.submit_text("no, cancela"),
     )

@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from jarvis.config import load_settings
 from jarvis.agent.tool_agent import tool_agent_from_settings
+from jarvis.intents.good_morning import run_morning_briefing
 from jarvis.memory.store import MemoryStore
 from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
@@ -74,7 +75,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # ---------------------------------------------------------------------------
 
 def _build_briefing() -> Dict[str, Any]:
-    """Genera el briefing de bienvenida con hora, estado del sistema."""
+    """Genera el briefing de bienvenida con briefing matutino + contexto del sistema."""
     now = datetime.now()
     hour = now.hour
 
@@ -117,12 +118,21 @@ def _build_briefing() -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    payload: Dict[str, Any] = {
         "greeting": greeting,
         "time": time_str,
         "date": date_human,
         "system": system,
     }
+    try:
+        result = run_morning_briefing()
+        payload["morning_text"] = result.text
+        payload["morning_blocks"] = result.blocks
+    except Exception:
+        # Fallback al briefing base si falla la intención local.
+        pass
+
+    return payload
 
 
 # ---------------------------------------------------------------------------

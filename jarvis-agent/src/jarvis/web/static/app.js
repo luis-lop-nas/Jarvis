@@ -437,7 +437,7 @@ function initInteractiveParticles() {
     // Mostrar briefing de bienvenida
     window.showBriefing = function(data) {
         if (!chatContainer) return;
-        const { greeting, time, date, system } = data;
+        const { greeting, time, date, system, morning_text } = data;
 
         let sysText = '';
         if (system && Object.keys(system).length > 0) {
@@ -451,7 +451,13 @@ function initInteractiveParticles() {
             if (parts.length > 0) sysText = ` | ${parts.join(' · ')}`;
         }
 
-        const content = `**${greeting}, señor.** Son las ${time} del ${date}.${sysText}\n\nTodos los sistemas operativos. ¿En qué puedo asistirle?`;
+        let content = `**${greeting}, señor.** Son las ${time} del ${date}.${sysText}\n\nTodos los sistemas operativos. ¿En qué puedo asistirle?`;
+        if (typeof morning_text === 'string' && morning_text.trim()) {
+            content = morning_text.trim();
+            if (sysText) {
+                content += `\n\nEstado del sistema:${sysText.replace(" |", "")}`;
+            }
+        }
         addMessage(content, 'assistant briefing');
     };
     

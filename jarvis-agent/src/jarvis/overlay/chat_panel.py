@@ -5,7 +5,7 @@ Panel de chat flotante persistente para Jarvis.
 Muestra el historial de conversación y permite enviar mensajes de texto.
 
 Características:
-  - Fondo oscuro semitransparente con borde azul eléctrico (misma estética que HUD)
+  - Fondo oscuro semitransparente con estética retro terminal (fósforo verde/ámbar)
   - Historial scrollable de mensajes (usuario y Jarvis)
   - Campo de texto en la parte inferior — Enter para enviar
   - Toggle mostrar/ocultar desde el menú ◉ J
@@ -29,10 +29,10 @@ class _ChatBG(AppKit.NSView):
         path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             self.bounds(), 14.0, 14.0
         )
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.04, 0.04, 0.09, 0.95).set()
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.02, 0.03, 0.02, 0.96).set()
         path.fill()
         path.setLineWidth_(1.5)
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.71, 1.0, 0.55).set()
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.35, 1.0, 0.42, 0.55).set()
         path.stroke()
 
     def isOpaque(self) -> bool:
@@ -43,7 +43,7 @@ class _ChatBG(AppKit.NSView):
 
 class _SepView(AppKit.NSView):
     def drawRect_(self, rect: AppKit.NSRect) -> None:
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.71, 1.0, 0.20).set()
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.35, 1.0, 0.42, 0.18).set()
         AppKit.NSRectFill(self.bounds())
 
     def isOpaque(self) -> bool:
@@ -179,13 +179,13 @@ class ChatPanel:
         lbl = AppKit.NSTextField.alloc().initWithFrame_(
             AppKit.NSMakeRect(16, self.HEIGHT - HEADER_H + 10, self.WIDTH - 56, 26)
         )
-        lbl.setStringValue_("◉  Jarvis Chat")
+        lbl.setStringValue_("[ JARVIS::TERMINAL ]")
         lbl.setBezeled_(False)
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
         lbl.setSelectable_(False)
-        lbl.setFont_(AppKit.NSFont.systemFontOfSize_weight_(14, AppKit.NSFontWeightSemibold))
-        lbl.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.71, 1.0, 0.9))
+        lbl.setFont_(AppKit.NSFont.fontWithName_size_("Menlo-Bold", 12) or AppKit.NSFont.systemFontOfSize_weight_(12, AppKit.NSFontWeightSemibold))
+        lbl.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.35, 1.0, 0.42, 0.9))
         bg.addSubview_(lbl)
 
         # ── Botón cerrar ─────────────────────────────────────────────────────
@@ -215,24 +215,24 @@ class ChatPanel:
         ico = AppKit.NSTextField.alloc().initWithFrame_(
             AppKit.NSMakeRect(14, 10, 26, 30)
         )
-        ico.setStringValue_("◉")
+        ico.setStringValue_("#")
         ico.setBezeled_(False)
         ico.setDrawsBackground_(False)
         ico.setEditable_(False)
         ico.setSelectable_(False)
         ico.setFont_(AppKit.NSFont.systemFontOfSize_(19))
-        ico.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.71, 1.0, 0.8))
+        ico.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 0.75, 0.25, 0.8))
         bg.addSubview_(ico)
 
         # ── Campo de texto ───────────────────────────────────────────────────
         self._input = AppKit.NSTextField.alloc().initWithFrame_(
             AppKit.NSMakeRect(44, 10, self.WIDTH - 60, 30)
         )
-        self._input.setPlaceholderString_("Escríbele a Jarvis… (Enter para enviar)")
+        self._input.setPlaceholderString_("> escribe comando o mensaje (Enter)")
         self._input.setBezeled_(False)
         self._input.setDrawsBackground_(False)
-        self._input.setFont_(AppKit.NSFont.systemFontOfSize_weight_(15, AppKit.NSFontWeightLight))
-        self._input.setTextColor_(AppKit.NSColor.whiteColor())
+        self._input.setFont_(AppKit.NSFont.fontWithName_size_("Menlo", 13) or AppKit.NSFont.systemFontOfSize_weight_(13, AppKit.NSFontWeightRegular))
+        self._input.setTextColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(0.82, 1.0, 0.84, 0.95))
         self._input.setFocusRingType_(AppKit.NSFocusRingTypeNone)
         self._input.setDelegate_(self._ctrl)
         bg.addSubview_(self._input)
@@ -269,7 +269,7 @@ class ChatPanel:
         scroll.setDocumentView_(self._tv)
 
         # Mensaje de bienvenida
-        self._append("jarvis", "Hola. ¿En qué te puedo ayudar?")
+        self._append("jarvis", "Sistema listo. Esperando instruccion.")
 
     # ── Lógica de envío ───────────────────────────────────────────────────────
 
@@ -301,15 +301,15 @@ class ChatPanel:
             storage.appendAttributedString_(nl)
 
         if role == "user":
-            lbl_color  = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.55, 0.85, 1.0, 0.65)
-            text_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.85, 0.95, 1.0, 0.95)
-            lbl_str    = "Tú"
-            font_w     = AppKit.NSFontWeightRegular
+            lbl_color  = AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 0.75, 0.30, 0.70)
+            text_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 0.84, 0.55, 0.95)
+            lbl_str    = "USER>"
+            msg_font   = AppKit.NSFont.fontWithName_size_("Menlo", 13) or AppKit.NSFont.systemFontOfSize_(13)
         else:
-            lbl_color  = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.71, 1.0, 0.75)
-            text_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.88, 0.94, 1.0, 0.92)
-            lbl_str    = "◈ Jarvis"
-            font_w     = AppKit.NSFontWeightLight
+            lbl_color  = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.35, 1.0, 0.42, 0.80)
+            text_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.78, 1.0, 0.80, 0.92)
+            lbl_str    = "JARVIS>"
+            msg_font   = AppKit.NSFont.fontWithName_size_("Menlo", 13) or AppKit.NSFont.systemFontOfSize_(13)
 
         # Etiqueta de nombre
         lbl_astr = AppKit.NSAttributedString.alloc().initWithString_attributes_(
@@ -327,7 +327,7 @@ class ChatPanel:
         msg_astr = AppKit.NSAttributedString.alloc().initWithString_attributes_(
             text,
             {
-                AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_weight_(14, font_w),
+                AppKit.NSFontAttributeName: msg_font,
                 AppKit.NSForegroundColorAttributeName: text_color,
             },
         )

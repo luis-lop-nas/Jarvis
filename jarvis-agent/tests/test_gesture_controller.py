@@ -531,6 +531,7 @@ class TestBuildGestureController:
 
     def _make_daemon(self):
         d = MagicMock()
+        d.enqueue_gesture_event = None
         d.interrupt = MagicMock()
         d.pause_gesture = MagicMock()
         d.resume_gesture = MagicMock()
@@ -614,3 +615,48 @@ class TestBuildGestureController:
         assert ctrl is not None
         # _dispatch no debe lanzar aunque el callback sea no-op
         ctrl._dispatch(GestureEvent.FIST)
+
+    def test_uses_trigger_queue_when_available(self):
+        daemon = MagicMock()
+        daemon.enqueue_gesture_event = MagicMock()
+        settings = self._make_settings()
+        ctrl = build_gesture_controller(settings, daemon)
+
+        ctrl._dispatch(GestureEvent.FIST)
+        ctrl._dispatch(GestureEvent.OPEN_PALM)
+        ctrl._dispatch(GestureEvent.OPEN_PALM)
+        ctrl._dispatch(GestureEvent.PINCH)
+        ctrl._dispatch(GestureEvent.V_SIGN)
+        ctrl._dispatch(GestureEvent.THUMB_UP)
+        ctrl._dispatch(GestureEvent.THUMB_DOWN)
+
+        daemon.enqueue_gesture_event.assert_has_calls(
+            [
+                call("interrupt"),
+                call("pause"),
+                call("resume"),
+                call("confirm"),
+                call("voice"),
+                call("yes"),
+                call("no"),
+            ],
+            any_order=False,
+        )
+
+    def test_queue_mode_does_not_call_legacy_methods(self):
+        daemon = MagicMock()
+        daemon.enqueue_gesture_event = MagicMock()
+        daemon.interrupt = MagicMock()
+        daemon.pause_gesture = MagicMock()
+        daemon.resume_gesture = MagicMock()
+        daemon.trigger_voice_input = MagicMock()
+        daemon.submit_text = MagicMock()
+        settings = self._make_settings()
+        ctrl = build_gesture_controller(settings, daemon)
+
+        ctrl._dispatch(GestureEvent.FIST)
+        ctrl._dispatch(GestureEvent.PINCH)
+
+        daemon.enqueue_gesture_event.assert_has_calls([call("interrupt"), call("confirm")])
+        daemon.interrupt.assert_not_called()
+        daemon.submit_text.assert_not_called()

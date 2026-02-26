@@ -16,7 +16,9 @@ from unittest.mock import patch
 import pytest
 
 from jarvis.tools.cad_generator import (
+    _to_container_output_path,
     _detect_llm,
+    execute_cad_code,
     extract_code,
     inject_output_path,
     load_session,
@@ -233,6 +235,53 @@ class TestInjectOutputPath:
         result = inject_output_path("result_code_here()", Path("/tmp/out.stl"))
         lines = [l for l in result.splitlines() if l.strip()]
         assert lines[0].startswith("OUTPUT_STL")
+
+
+class TestContainerPath:
+
+    def test_container_path_uses_workspace_prefix(self):
+        host = Path("/Users/test/Documents/Jarvis/models/my_model.stl")
+        container = _to_container_output_path(host)
+        assert container.as_posix() == "/workspace/my_model.stl"
+
+
+class TestExecuteCadCode:
+
+    def test_execute_uses_run_code_tool(self, tmp_path):
+        out = tmp_path / "model.stl"
+        out.write_bytes(b"x")
+        with patch("jarvis.tools.cad_generator._MODELS_DIR", tmp_path), \
+             patch("jarvis.tools.cad_generator.run_code_tool") as mock_run:
+            mock_run.return_value = {"returncode": 0, "stdout": "ok", "stderr": ""}
+            ok, msg = execute_cad_code("print('hi')", out, timeout=25)
+
+        assert ok is True
+        assert msg == "ok"
+        args = mock_run.call_args[0][0]
+        assert args["language"] == "python"
+        assert args["workspace_dir"] == str(tmp_path)
+        assert args["timeout_sec"] == 25
+        assert args["image"] == "jarvis-python:latest"
+
+    def test_execute_returns_error_when_no_stl_created(self, tmp_path):
+        out = tmp_path / "missing.stl"
+        with patch("jarvis.tools.cad_generator._MODELS_DIR", tmp_path), \
+             patch("jarvis.tools.cad_generator.run_code_tool") as mock_run:
+            mock_run.return_value = {"returncode": 0, "stdout": "ok", "stderr": ""}
+            ok, msg = execute_cad_code("print('hi')", out)
+
+        assert ok is False
+        assert "no creó el STL" in msg
+
+    def test_execute_returns_stderr_when_returncode_nonzero(self, tmp_path):
+        out = tmp_path / "model.stl"
+        with patch("jarvis.tools.cad_generator._MODELS_DIR", tmp_path), \
+             patch("jarvis.tools.cad_generator.run_code_tool") as mock_run:
+            mock_run.return_value = {"returncode": 1, "stdout": "", "stderr": "OCC error"}
+            ok, msg = execute_cad_code("print('hi')", out)
+
+        assert ok is False
+        assert "OCC error" in msg
 
 
 # ---------------------------------------------------------------------------

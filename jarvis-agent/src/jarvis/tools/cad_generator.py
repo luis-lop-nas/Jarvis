@@ -7,7 +7,7 @@ Genera modelos 3D paramétricos a partir de descripciones en lenguaje natural.
 Flujo (acción 'create'):
   1. LLM convierte la descripción → código build123d
   2. Validación de seguridad vía AST (bloquea imports/llamadas peligrosas)
-  3. Ejecución en un subproceso aislado con sys.executable
+  3. Ejecución en sandbox Docker usando la tool run_code existente
   4. Reintentos automáticos (hasta 3) enviando el error de compilación de vuelta al LLM
   5. El STL resultante se guarda en ~/Documents/Jarvis/models/
   6. Contexto de sesión persistente para iteraciones
@@ -35,11 +35,12 @@ import json
 import os
 import re
 import subprocess
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from jarvis.tools.run_code import run_code as run_code_tool
 
 # ---------------------------------------------------------------------------
 # Configuración
@@ -47,8 +48,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _MODELS_DIR   = Path.home() / "Documents" / "Jarvis" / "models"
 _SESSION_FILE = _MODELS_DIR / ".cad_sessions.json"
-_TEMP_SCRIPT  = _MODELS_DIR / "_jarvis_cad_temp.py"
-
 _MAX_RETRIES  = 3
 _EXEC_TIMEOUT = 120   # segundos máximos de ejecución build123d
 
@@ -450,13 +449,21 @@ def inject_output_path(code: str, output_path: Path) -> str:
     return header + code
 
 
+def _to_container_output_path(output_path: Path) -> Path:
+    """
+    Convierte una ruta de host dentro de _MODELS_DIR a la ruta visible en el
+    contenedor Docker montado como /workspace.
+    """
+    return Path("/workspace") / output_path.name
+
+
 # ---------------------------------------------------------------------------
-# Ejecución local del código CAD
+# Ejecución del código CAD en sandbox Docker
 # ---------------------------------------------------------------------------
 
 def execute_cad_code(code: str, output_path: Path, timeout: int = _EXEC_TIMEOUT) -> Tuple[bool, str]:
     """
-    Ejecuta el código build123d en un subproceso aislado (sys.executable).
+    Ejecuta el código build123d en el sandbox Docker existente (tool run_code).
 
     Args:
         code:        Código Python completo (ya incluye OUTPUT_STL = …).
@@ -470,42 +477,31 @@ def execute_cad_code(code: str, output_path: Path, timeout: int = _EXEC_TIMEOUT)
     """
     _MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    script = _TEMP_SCRIPT
     try:
-        script.write_text(code, encoding="utf-8")
-
-        result = subprocess.run(
-            [sys.executable, str(script)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(_MODELS_DIR),
-        )
-
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "Sin salida de error").strip()
-            # Recortar trazas largas de OCC para que el LLM pueda digerirlas
-            if len(err) > 2000:
-                err = err[-2000:]
-            return False, err
-
-        if not output_path.exists():
-            return False, (
-                f"El script terminó sin error pero no creó el STL en: {output_path}. "
-                f"Stdout: {result.stdout[:500]}"
-            )
-
-        return True, result.stdout.strip()
-
-    except subprocess.TimeoutExpired:
-        return False, f"Timeout: la ejecución superó {timeout}s"
+        result = run_code_tool({
+            "language": "python",
+            "code": code,
+            "workspace_dir": str(_MODELS_DIR),
+            "timeout_sec": int(timeout),
+            "image": "jarvis-python:latest",
+        })
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
-    finally:
-        try:
-            script.unlink(missing_ok=True)
-        except Exception:
-            pass
+
+    if int(result.get("returncode", 1)) != 0:
+        err = (result.get("stderr") or result.get("stdout") or "Sin salida de error").strip()
+        if len(err) > 2000:
+            err = err[-2000:]
+        return False, err
+
+    if not output_path.exists():
+        stdout = str(result.get("stdout", ""))[:500]
+        return False, (
+            f"La ejecución en sandbox terminó sin error pero no creó el STL en: {output_path}. "
+            f"Stdout: {stdout}"
+        )
+
+    return True, str(result.get("stdout", "")).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -633,8 +629,9 @@ def _generate_with_retries(
             existing_code = None  # Regenerar desde cero si hay violación de seguridad
             continue
 
-        # ── Inyectar OUTPUT_STL + ejecutar ────────────────────────────────────
-        full_code = inject_output_path(code, output_path)
+        # ── Inyectar OUTPUT_STL (ruta dentro de Docker) + ejecutar ───────────
+        container_output = _to_container_output_path(output_path)
+        full_code = inject_output_path(code, container_output)
         success, msg = execute_cad_code(full_code, output_path)
 
         if success:

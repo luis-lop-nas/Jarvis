@@ -1,22 +1,8 @@
 """
-view.py — Cloud Entity
+view.py — Retro ASCII Entity
 
-Nube orgánica de 80 partículas estilo "cloud entity / glitch art".
-Reemplaza la esfera 3D con corona solar.
-
-Paletas por estado:
-  idle      → cyan  #00ffe0 + purple #7b2fff
-  listening → green #00ff88 + cyan   #00ffe0
-  thinking  → yellow #ffe100 + orange #ff8c00
-  acting    → pink  #ff2060 + purple #8b00ff
-
-Cada partícula tiene:
-  - Posición home en distribución sunflower spiral deformada
-  - Spring physics + ruido Perlin para movimiento orgánico
-  - Trail (rastro de posiciones anteriores)
-  - 7% de probabilidad de ser un glyph con aberración cromática
-
-Ciclo de render: NSTimer 30 fps → tick_ → update partículas → setNeedsDisplay_
+Entidad abstracta retro formada por caracteres ASCII en movimiento.
+Inspiración: primeras interfaces de ordenador (CRT/terminal).
 """
 
 from __future__ import annotations
@@ -33,18 +19,18 @@ import objc
 # (r, g, b) normalizados 0-1
 
 _PALETTES: dict[str, dict] = {
-    'idle':      {'a': (0.000, 1.000, 0.878), 'b': (0.482, 0.188, 1.000)},
-    'listening': {'a': (0.000, 1.000, 0.533), 'b': (0.000, 1.000, 0.878)},
-    'thinking':  {'a': (1.000, 0.882, 0.000), 'b': (1.000, 0.549, 0.000)},
-    'acting':    {'a': (1.000, 0.125, 0.376), 'b': (0.545, 0.000, 1.000)},
+    'idle':      {'a': (0.95, 0.95, 0.95), 'b': (0.55, 0.55, 0.55)},
+    'listening': {'a': (1.00, 1.00, 1.00), 'b': (0.65, 0.65, 0.65)},
+    'thinking':  {'a': (1.00, 1.00, 1.00), 'b': (0.72, 0.72, 0.72)},
+    'acting':    {'a': (1.00, 1.00, 1.00), 'b': (0.62, 0.62, 0.62)},
 }
 
-_GLYPHS = ['◆', '◇', '✦', '◉', '▸', '◌', '✕', '○', '◈', '▲', '▶', '▼', '⬡', '◐']
+_GLYPHS = ['0', '1']
 
-_NUM    = 80      # número de partículas
+_NUM    = 96      # número de partículas
 _BASE_R = 85.0   # radio base de la distribución (compacto)
-_HIT_R  = 44.0   # zona interactiva para drag/clic
-_PROX_R = 115.0  # zona de proximidad para activar mouse events
+_HIT_R  = 74.0   # zona interactiva para drag/clic
+_PROX_R = 190.0  # zona de proximidad para activar mouse events
 
 
 # ── Distribución sunflower spiral ─────────────────────────────────────────────
@@ -109,7 +95,7 @@ class _Particle:
         self.acc         = random.randint(0, self.step)
         self.logic_frame = 0
 
-        self.is_glyph = random.random() < 0.07
+        self.is_glyph = True
         self.glyph    = random.choice(_GLYPHS)
 
         self.trail: List[Tuple[float, float]] = []
@@ -264,8 +250,9 @@ class JarvisView(AppKit.NSView):
         if self is None:
             return None
 
-        self._orb_x = 80.0
-        self._orb_y = 80.0
+        # Margen visual para que no quede pegado a la esquina inferior izquierda.
+        self._orb_x = 150.0
+        self._orb_y = 120.0
         self._state = 'idle'
         self._audio_level = 0.0
         self._pal   = _PALETTES['idle']
@@ -290,17 +277,20 @@ class JarvisView(AppKit.NSView):
         self._window            = None
         self._orb_click_handler = None
 
-        # fuente monospace para glyphs — tamaño fijo (evita crear NSFont por frame)
+        # fuente monospace para glyphs retro (evita crear NSFont por frame)
         self._glyph_font = (
-            AppKit.NSFont.fontWithName_size_('SF Mono', 14.0) or
-            AppKit.NSFont.fontWithName_size_('Menlo', 14.0) or
-            AppKit.NSFont.monospacedSystemFontOfSize_weight_(14.0, AppKit.NSFontWeightRegular)
+            AppKit.NSFont.fontWithName_size_('Monaco', 11.0) or
+            AppKit.NSFont.fontWithName_size_('Menlo', 11.0) or
+            AppKit.NSFont.monospacedSystemFontOfSize_weight_(11.0, AppKit.NSFontWeightRegular)
         )
 
         # NSTimer 30 fps
         self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / 30.0, self, 'tick:', None, True,
         )
+        self._crt_phase = 0.0
+        self._grid_phase = random.random() * 10.0
+        self._listen_phase = 0.0
 
         return self
 
@@ -348,6 +338,12 @@ class JarvisView(AppKit.NSView):
     def tick_(self, timer):
         cx, cy = self._orb_x, self._orb_y
         al     = self._audio_level
+        self._crt_phase += 0.035
+        self._grid_phase += 0.04
+        if self._state == 'listening':
+            self._listen_phase += 0.20
+        else:
+            self._listen_phase += 0.08
 
         for p in self._particles_cloud:
             p.update(cx, cy, al)
@@ -371,82 +367,99 @@ class JarvisView(AppKit.NSView):
         cx, cy  = self._orb_x, self._orb_y
         ar, ag, ab = self._pal['a']   # color acento A (principal)
 
-        # ── Partículas de la nube ─────────────────────────────────────────────
-        for p in self._particles_cloud:
-            cr, cg, cb = p.color
-            a  = p.opacity
-            px, py, sz = p.x, p.y, p.size
+        # ── Bloque visual principal ────────────────────────────────────────
+        block_w = 300.0
+        block_h = 182.0
 
-            # trail: líneas progresivamente más transparentes y delgadas
-            trail = p.trail
-            n_tr  = len(trail)
-            if n_tr >= 2:
-                for i in range(n_tr - 1):
-                    x0, y0 = trail[i]
-                    x1, y1 = trail[i + 1]
-                    seg_alpha = a * (i / n_tr) * 0.45
-                    if seg_alpha < 0.008:
-                        continue
-                    seg = AppKit.NSBezierPath.bezierPath()
-                    seg.setLineWidth_(sz * 0.28 * ((i + 1) / n_tr))
-                    seg.setLineCapStyle_(AppKit.NSLineCapStyleRound)
-                    seg.moveToPoint_(AppKit.NSMakePoint(x0, y0))
-                    seg.lineToPoint_(AppKit.NSMakePoint(x1, y1))
-                    AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, seg_alpha).set()
-                    seg.stroke()
+        # Animación diferenciada en estado listening: oscilación + respiración.
+        if self._state == 'listening':
+            bob_x = math.sin(self._listen_phase * 0.8) * 5.0
+            bob_y = abs(math.sin(self._listen_phase)) * 4.0
+            scale = 1.0 + 0.05 * abs(math.sin(self._listen_phase * 1.5))
+        else:
+            bob_x = math.sin(self._listen_phase * 0.35) * 1.2
+            bob_y = 0.0
+            scale = 1.0
 
-            # dibujar partícula
-            if p.is_glyph and sz > 2.5:
-                # aberración cromática: rojo (izq) + cyan (der) + color propio (centro)
-                font = self._glyph_font
+        block_w *= scale
+        block_h *= scale
+        x0 = cx - block_w / 2.0 + bob_x
+        y0 = cy - block_h / 2.0 + bob_y
 
-                s_red = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                    p.glyph,
-                    {AppKit.NSFontAttributeName: font,
-                     AppKit.NSForegroundColorAttributeName:
-                         AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 0.125, 0.376, a * 0.30)},
+        bg_rect = AppKit.NSMakeRect(x0, y0, block_w, block_h)
+        bg_path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bg_rect, 20.0, 20.0)
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.98).set()
+        bg_path.fill()
+
+        # Borde sutil blanco
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.92, 0.92, 0.92, 0.20).set()
+        bg_path.setLineWidth_(1.0)
+        bg_path.stroke()
+
+        # ── Rejilla binaria animada tipo referencia ────────────────────────
+        rows = 20
+        cols = 42
+        mx = 14.0
+        my = 12.0
+        cell_w = (block_w - mx * 2.0) / cols
+        cell_h = (block_h - my * 2.0) / rows
+
+        font = (
+            AppKit.NSFont.fontWithName_size_('Monaco', 11.0) or
+            AppKit.NSFont.fontWithName_size_('Menlo', 11.0) or
+            AppKit.NSFont.monospacedSystemFontOfSize_weight_(11.0, AppKit.NSFontWeightRegular)
+        )
+
+        for r in range(rows):
+            for c in range(cols):
+                px = x0 + mx + c * cell_w
+                py = y0 + my + (rows - r - 1) * cell_h
+
+                # Máscara orgánica horizontal similar a la captura (bandas + recortes)
+                wave = math.sin(c * 0.17 + r * 0.41 + self._grid_phase * 1.2)
+                ridge = math.sin(r * 0.95 - self._grid_phase * 0.55)
+                band_cut = abs(math.sin(r * 0.68 + self._grid_phase * 0.35)) > 0.96
+                if band_cut:
+                    continue
+
+                density = 0.42 + 0.34 * wave + 0.22 * ridge
+                if self._state == 'listening':
+                    density += 0.18 * math.sin((c * 0.6) - self._listen_phase * 2.2)
+                if density < 0.18:
+                    continue
+
+                bit = '0' if math.sin(c * 0.71 + r * 0.33 + self._grid_phase * 2.2) > 0.35 else '1'
+                alpha = min(0.98, 0.44 + 0.42 * max(0.0, density))
+                color = AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, alpha)
+                s = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    bit,
+                    {
+                        AppKit.NSFontAttributeName: font,
+                        AppKit.NSForegroundColorAttributeName: color,
+                    },
                 )
-                s_red.drawAtPoint_(AppKit.NSMakePoint(px - 1.5, py))
+                s.drawAtPoint_(AppKit.NSMakePoint(px, py))
 
-                s_cyan = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                    p.glyph,
-                    {AppKit.NSFontAttributeName: font,
-                     AppKit.NSForegroundColorAttributeName:
-                         AppKit.NSColor.colorWithRed_green_blue_alpha_(0.0, 1.0, 0.878, a * 0.30)},
-                )
-                s_cyan.drawAtPoint_(AppKit.NSMakePoint(px + 1.5, py))
-
-                s_main = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                    p.glyph,
-                    {AppKit.NSFontAttributeName: font,
-                     AppKit.NSForegroundColorAttributeName:
-                         AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a)},
-                )
-                s_main.drawAtPoint_(AppKit.NSMakePoint(px, py))
-
-            else:
-                # glow dot: halo exterior + core + núcleo oscuro
-                for glow_r, ga in ((sz * 4.0, 0.040), (sz * 2.2, 0.090)):
-                    AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * ga).set()
-                    AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                        AppKit.NSMakeRect(px - glow_r, py - glow_r, glow_r * 2.0, glow_r * 2.0)
-                    ).fill()
-
-                AppKit.NSColor.colorWithRed_green_blue_alpha_(cr, cg, cb, a * 0.85).set()
-                AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                    AppKit.NSMakeRect(px - sz, py - sz, sz * 2.0, sz * 2.0)
-                ).fill()
-
-                # núcleo oscuro (efecto ink / glass)
-                cr_k = sz * 0.30
-                AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.70).set()
-                AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-                    AppKit.NSMakeRect(px - cr_k, py - cr_k, cr_k * 2.0, cr_k * 2.0)
-                ).fill()
+        # Barra de barrido en modo escucha para feedback inmediato.
+        if self._state == 'listening':
+            sweep = (math.sin(self._listen_phase * 0.9) * 0.5 + 0.5) * (block_h - 14.0)
+            sy = y0 + 7.0 + sweep
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
+            AppKit.NSRectFill(AppKit.NSMakeRect(x0 + 8.0, sy, block_w - 16.0, 1.4))
 
         # ── Partículas fly_to (encima de la nube) ────────────────────────────
         if self._fly_particles is not None:
             self._fly_particles.draw()
+
+        # ── Scanlines CRT sutiles ────────────────────────────────────────────
+        h = block_h
+        w = block_w
+        step = 3.0
+        y = 0.0
+        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.85, 0.85, 0.85, 0.05).set()
+        while y < h:
+            AppKit.NSRectFill(AppKit.NSMakeRect(x0, y0 + y, w, 1.0))
+            y += step
 
     # ── API pública ───────────────────────────────────────────────────────────
 

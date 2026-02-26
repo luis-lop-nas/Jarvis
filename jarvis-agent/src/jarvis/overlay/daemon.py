@@ -333,6 +333,15 @@ class JarvisDaemon:
         self._interrupt_event.set()
         self._trigger_queue.put("hotkey")
 
+    def enqueue_gesture_event(self, action: str) -> None:
+        """
+        Encola una acción de gesto para procesarla en el loop principal.
+        Usa trigger_queue para mantener un único pipeline de eventos.
+        """
+        if not action:
+            return
+        self._trigger_queue.put(("gesture", action))
+
     def interrupt(self) -> None:
         """
         Interrumpe el TTS/grabación en curso sin iniciar una nueva petición.
@@ -410,10 +419,39 @@ class JarvisDaemon:
 
             if isinstance(source, tuple) and source[0] == "chat_text":
                 self._handle_chat_text(source[1])
+            elif isinstance(source, tuple) and source[0] == "gesture":
+                self._handle_gesture_event(source[1])
             elif source == "hotkey":
                 self._handle_hotkey_request()
             else:
                 self._handle_request()
+
+    def _handle_gesture_event(self, action: str) -> None:
+        """Gestiona acciones de gesto encoladas desde GestureController."""
+        action = (action or "").strip().lower()
+        if action == "interrupt":
+            self.interrupt()
+            return
+        if action == "pause":
+            self.pause_gesture()
+            return
+        if action == "resume":
+            self.resume_gesture()
+            return
+        if action == "voice":
+            self.trigger_voice_input()
+            return
+        if action == "confirm":
+            self.submit_text("sí, confirmo")
+            return
+        if action == "yes":
+            self.submit_text("sí")
+            return
+        if action == "no":
+            self.submit_text("no, cancela")
+            return
+
+        print(f"⚠️ Acción de gesto desconocida: {action}")
 
     def _wake_word_loop(self) -> None:
         """Thread siempre activo que detecta wake word incluso mientras Jarvis habla."""
@@ -859,12 +897,16 @@ class JarvisDaemon:
         try:
             from jarvis.voice.wake_word import WakeWordConfig, WakeWordListener
             s = self._settings
-            # 0.1: muy sensible, detecta fácilmente
-            sensitivity = 0.1
+            sensitivity = float(getattr(s, "wake_word_sensitivity", 0.5))
             cfg = WakeWordConfig(
                 engine=getattr(s, "wake_word_engine", "openwakeword"),
                 oww_model=getattr(s, "wake_word_model", "hey_jarvis"),
                 sensitivity=sensitivity,
+                debug=bool(getattr(s, "wake_word_debug", False)),
+                oww_min_rms=float(getattr(s, "wake_word_min_rms", 120.0)),
+                oww_min_consecutive_hits=int(getattr(s, "wake_word_min_hits", 2)),
+                oww_activation_cooldown_sec=float(getattr(s, "wake_word_cooldown", 1.5)),
+                oww_score_ema_alpha=float(getattr(s, "wake_word_score_ema_alpha", 0.6)),
                 access_key=getattr(s, "porcupine_access_key", "") or "",
                 keyword=getattr(s, "wake_word", "jarvis"),
             )
