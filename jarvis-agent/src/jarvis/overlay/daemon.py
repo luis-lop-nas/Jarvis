@@ -330,6 +330,7 @@ class JarvisDaemon:
             settings,
             registry=registry,
             memory_store=memory_store,
+            paths=paths,
         )
 
         # ── STT

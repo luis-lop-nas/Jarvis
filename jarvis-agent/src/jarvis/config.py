@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -105,6 +105,31 @@ class Settings(BaseSettings):
 
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
+
+    # --- Confirm policy ---
+    confirm_policy_enabled: bool = Field(default=True, alias="CONFIRM_POLICY_ENABLED")
+    confirm_ttl_seconds: int = Field(default=120, alias="CONFIRM_TTL_SECONDS")
+    confirm_always_for: List[str] = Field(default_factory=list, alias="CONFIRM_ALWAYS_FOR")
+
+    # --- Dry run (acciones sensibles) ---
+    dry_run_enabled: bool = Field(default=True, alias="DRY_RUN_ENABLED")
+    dry_run_ttl_seconds: int = Field(default=120, alias="DRY_RUN_TTL_SECONDS")
+    dry_run_always_for: List[str] = Field(default_factory=list, alias="DRY_RUN_ALWAYS_FOR")
+    dry_run_max_items_list: int = Field(default=20, alias="DRY_RUN_MAX_ITEMS_LIST")
+    dry_run_snippet_chars: int = Field(default=300, alias="DRY_RUN_SNIPPET_CHARS")
+
+    # --- Shell guard ---
+    shell_guard_enabled: bool = Field(default=True, alias="SHELL_GUARD_ENABLED")
+    shell_guard_mode: str = Field(default="strict", alias="SHELL_GUARD_MODE")
+    shell_deny_patterns: List[str] = Field(default_factory=list, alias="SHELL_DENY_PATTERNS")
+    shell_confirm_patterns: List[str] = Field(default_factory=list, alias="SHELL_CONFIRM_PATTERNS")
+
+    # --- Verifier ---
+    verifier_enabled: bool = Field(default=True, alias="VERIFIER_ENABLED")
+    verifier_timeout_ms: int = Field(default=1500, alias="VERIFIER_TIMEOUT_MS")
+    verifier_max_items: int = Field(default=50, alias="VERIFIER_MAX_ITEMS")
+    verifier_sample_if_over: int = Field(default=200, alias="VERIFIER_SAMPLE_IF_OVER")
+    verifier_strict: bool = Field(default=False, alias="VERIFIER_STRICT")
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 

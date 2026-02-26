@@ -60,7 +60,8 @@ def run_cli(settings: Any, paths: Any) -> None:
     # Crear agente con memoria
     agent = tool_agent_from_settings(
         settings,
-        memory_store=memory_store
+        memory_store=memory_store,
+        paths=paths,
     )
     
     # Setup logging

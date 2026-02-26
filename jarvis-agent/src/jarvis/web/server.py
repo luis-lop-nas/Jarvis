@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     settings, paths = load_settings()
 
     memory_store = MemoryStore(paths.db_path)
-    _agent = tool_agent_from_settings(settings, memory_store=memory_store)
+    _agent = tool_agent_from_settings(settings, memory_store=memory_store, paths=paths)
 
     _stt = STT(STTConfig(
         engine=settings.stt_engine,

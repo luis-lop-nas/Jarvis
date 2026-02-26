@@ -13,15 +13,26 @@ import asyncio
 import json
 import queue as queue_module
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import requests
 
+from jarvis.agent.confirm_policy import (
+    extract_confirm_token,
+    is_affirmative,
+    is_confirmation_reply,
+    is_negative,
+)
+from jarvis.agent.dry_run import build_preview, build_summary, infer_risk, is_sensitive
 from jarvis.agent.intent_tracker import IntentTracker
+from jarvis.agent.pending_actions import PendingActionStore
 from jarvis.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_GROQ
 from jarvis.agent.runner import AgentConfig
 from jarvis.agent.state import AgentState, truncate_history
+from jarvis.agent.verifier import VerifyContext, verify
+from jarvis.tools.shell_guard import analyze_shell_command
 from jarvis.tools.registry import ToolRegistry, build_default_registry
 
 
@@ -49,6 +60,27 @@ class ToolAgentConfig(AgentConfig):
     # Memoria
     session_id: Optional[str] = None
     enable_memory: bool = True
+    # Dry-run
+    dry_run_enabled: bool = True
+    dry_run_ttl_seconds: int = 120
+    dry_run_always_for: List[str] = field(default_factory=list)
+    dry_run_max_items_list: int = 20
+    dry_run_snippet_chars: int = 300
+    # Backward compatibility
+    confirm_policy_enabled: bool = True
+    confirm_ttl_seconds: int = 120
+    confirm_always_for: List[str] = field(default_factory=list)
+    # Shell guard
+    shell_guard_enabled: bool = True
+    shell_guard_mode: str = "strict"
+    shell_deny_patterns: List[str] = field(default_factory=list)
+    shell_confirm_patterns: List[str] = field(default_factory=list)
+    # Verifier
+    verifier_enabled: bool = True
+    verifier_timeout_ms: int = 1500
+    verifier_max_items: int = 50
+    verifier_sample_if_over: int = 200
+    verifier_strict: bool = False
 
 
 class ToolAgent:
@@ -58,11 +90,17 @@ class ToolAgent:
         registry: Optional[ToolRegistry] = None,
         state: Optional[AgentState] = None,
         memory_store: Optional[Any] = None,
+        confirm_context: Optional[Any] = None,
     ):
         self.config = config
         self.registry = registry or build_default_registry()
         self.state = state or AgentState()
         self.memory_store = memory_store
+        self._confirm_context = confirm_context or {
+            "project_root": Path.cwd(),
+            "data_dir": Path.cwd() / "data",
+        }
+        self._pending_actions = PendingActionStore(ttl_seconds=self.config.dry_run_ttl_seconds)
 
         if self.memory_store and self.config.enable_memory and not self.config.session_id:
             self.config.session_id = self.memory_store.create_session()
@@ -139,6 +177,200 @@ class ToolAgent:
             except Exception as e:
                 if self.config.debug:
                     print(f"⚠️ Error guardando tool event: {e}")
+
+    def _verify_tool_result(self, tool_name: str, tool_args: Dict[str, Any], tool_out: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.config.verifier_enabled:
+            return tool_out
+
+        vctx = VerifyContext(
+            timeout_ms=self.config.verifier_timeout_ms,
+            max_items=self.config.verifier_max_items,
+            sample_if_over=self.config.verifier_sample_if_over,
+            strict=self.config.verifier_strict,
+            turn_id=self.config.session_id,
+        )
+        report = verify(tool_name, tool_args, tool_out, vctx)
+        report_dict = {
+            "status": report.status,
+            "reason": report.reason,
+            "details": report.details,
+            "suggested_fix": report.suggested_fix,
+            "evidence": report.evidence,
+            "retryable": report.retryable,
+        }
+        critical_tools = {
+            "filesystem",
+            "shell",
+            "calendar",
+            "send_email",
+            "send_message",
+            "download_file",
+            "search_and_download",
+            "open_app",
+            "web_agent",
+        }
+        status = report.status
+        if status == "unknown" and self.config.verifier_strict and tool_name in critical_tools:
+            status = "fail"
+            report_dict["reason"] = (
+                f"{report.reason} (VERIFIER_STRICT=true: unknown tratado como fail)."
+            )
+
+        if status == "fail":
+            return {
+                "ok": False,
+                "type": "action_failed",
+                "tool": tool_name,
+                "verify_report": report_dict,
+                "tool_result": tool_out,
+            }
+
+        out = tool_out if isinstance(tool_out, dict) else {"result": tool_out}
+        out["verify_report"] = report_dict
+        out["verified"] = status == "ok"
+        return out
+
+    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        tool_out = self.registry.call(tool_name, tool_args)
+        verified_out = self._verify_tool_result(tool_name, tool_args, tool_out)
+        self.intent_tracker.on_tool_executed(tool_name)
+        self._save_tool_event(tool_name, tool_args, verified_out)
+        return verified_out
+
+    # ------------------------------------------------------------------
+    # Dry-run policy
+    # ------------------------------------------------------------------
+
+    @property
+    def has_pending_confirmation(self) -> bool:
+        return self._pending_actions.has_pending()
+
+    def _render_dry_run_prompt(self, payload: Dict[str, Any]) -> str:
+        if payload.get("type") == "deny":
+            return (
+                f"⛔ Bloqueado por seguridad: {payload.get('reason', 'Comando denegado')}\n"
+                "Sugerencia: indica una ruta/acción específica y segura para continuar."
+            )
+        risk = str(payload.get("risk_level") or "medium").upper()
+        details = payload.get("details") or {}
+        return (
+            f"⚠️ {payload.get('summary', 'Acción sensible')}\n"
+            f"Motivo: {payload.get('reason', 'Requiere confirmación')}\n"
+            f"Riesgo: {risk}\n"
+            f"Detalles: {json.dumps(details, ensure_ascii=False)}\n"
+            f"Token: {payload.get('confirm_token', '')}\n"
+            "Responde 'sí' o 'confirmar <token>' para continuar, "
+            "o 'no'/'cancelar' para descartar. ¿Confirmas?"
+        )
+
+    def _handle_confirmation_turn(self, user_text: str) -> Optional[str]:
+        self._pending_actions.cleanup_expired()
+        if not is_confirmation_reply(user_text):
+            return None
+        if not self._pending_actions.has_pending():
+            return "No hay ninguna acción pendiente para confirmar o cancelar."
+
+        token = extract_confirm_token(user_text)
+
+        if is_negative(user_text):
+            pending = self._pending_actions.cancel(token)
+            if not pending:
+                return "No hay ninguna acción pendiente para cancelar."
+            return f"Cancelado: {pending.summary}"
+
+        if is_affirmative(user_text):
+            pending = self._pending_actions.confirm(token)
+            if not pending:
+                return "No hay ninguna acción pendiente para confirmar o ya expiró."
+
+            tool_out = self._execute_tool(pending.tool_name, dict(pending.args))
+            if tool_out.get("ok", True):
+                return f"Hecho: {pending.summary}\nResultado: {json.dumps(tool_out, ensure_ascii=False)}"
+            return (
+                f"Intenté ejecutar '{pending.tool_name}', pero falló:\n"
+                f"{json.dumps(tool_out, ensure_ascii=False)}"
+            )
+        return None
+
+    def _maybe_build_dry_run(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        enabled = self.config.dry_run_enabled and self.config.confirm_policy_enabled
+        if not enabled:
+            return None
+        always_for = set(str(t).strip().lower() for t in (self.config.dry_run_always_for or []) if str(t).strip())
+        shell_mode = self.config.shell_guard_mode
+        shell_deny = self.config.shell_deny_patterns
+        shell_confirm = self.config.shell_confirm_patterns
+        if tool_name == "shell" and self.config.shell_guard_enabled:
+            shell_decision = analyze_shell_command(
+                str(tool_args.get("command", "")).strip(),
+                cwd=str(tool_args.get("cwd", "") or ""),
+                mode=shell_mode,
+                deny_patterns=shell_deny,
+                confirm_patterns=shell_confirm,
+            )
+            if shell_decision.decision == "deny":
+                return {
+                    "type": "deny",
+                    "requires_confirmation": False,
+                    "risk_level": shell_decision.risk_level,
+                    "summary": f"Bloqueado por seguridad: {shell_decision.normalized_command}",
+                    "reason": shell_decision.reason,
+                    "details": {
+                        "command": shell_decision.normalized_command,
+                        "cwd": str(tool_args.get("cwd", "") or ""),
+                        "rules": shell_decision.matches,
+                    },
+                    "confirm_token": "",
+                }
+
+        if not is_sensitive(
+            tool_name,
+            tool_args,
+            always_for=always_for,
+            shell_guard_mode=shell_mode,
+            shell_deny_patterns=shell_deny,
+            shell_confirm_patterns=shell_confirm,
+        ):
+            return None
+
+        summary = build_summary(tool_name, tool_args)
+        details = build_preview(
+            tool_name,
+            tool_args,
+            max_items=self.config.dry_run_max_items_list,
+            snippet_chars=self.config.dry_run_snippet_chars,
+            shell_guard_mode=shell_mode,
+            shell_deny_patterns=shell_deny,
+            shell_confirm_patterns=shell_confirm,
+        )
+        reason = str(details.get("guard_reason", "")).strip() if tool_name == "shell" else ""
+        if not reason:
+            reason = "Acción sensible; requiere confirmación explícita."
+        risk_level = infer_risk(
+            tool_name,
+            tool_args,
+            shell_guard_mode=shell_mode,
+            shell_deny_patterns=shell_deny,
+            shell_confirm_patterns=shell_confirm,
+        )
+
+        pending = self._pending_actions.put(
+            tool_name=tool_name,
+            args=tool_args,
+            summary=summary,
+            reason=reason,
+            details=details,
+            risk_level=risk_level,
+        )
+        return {
+            "type": "dry_run",
+            "requires_confirmation": True,
+            "confirm_token": pending.confirm_token,
+            "summary": pending.summary,
+            "reason": pending.reason,
+            "risk_level": pending.risk_level,
+            "details": pending.details,
+        }
 
     # ------------------------------------------------------------------
     # Schema de herramientas
@@ -330,9 +562,14 @@ class ToolAgent:
                             })
                             continue  # don't execute the tool
 
-                        tool_out = self.registry.call(tool_name, tool_args)
-                        self.intent_tracker.on_tool_executed(tool_name)
-                        self._save_tool_event(tool_name, tool_args, tool_out)
+                        confirm_evt = self._maybe_build_dry_run(tool_name, tool_args)
+                        if confirm_evt:
+                            text = self._render_dry_run_prompt(confirm_evt)
+                            self.state.add_assistant(text)
+                            self._save_message("assistant", text)
+                            return text
+
+                        tool_out = self._execute_tool(tool_name, tool_args)
 
                         tool_results.append({
                             "type": "tool_result",
@@ -484,9 +721,14 @@ class ToolAgent:
                 if self.config.debug:
                     print(f"🔧 Gemini usa: {fc.name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
 
-                tool_out = self.registry.call(fc.name, tool_args)
-                self.intent_tracker.on_tool_executed(fc.name)
-                self._save_tool_event(fc.name, tool_args, tool_out)
+                confirm_evt = self._maybe_build_dry_run(fc.name, tool_args)
+                if confirm_evt:
+                    text = self._render_dry_run_prompt(confirm_evt)
+                    self.state.add_assistant(text)
+                    self._save_message("assistant", text)
+                    return text
+
+                tool_out = self._execute_tool(fc.name, tool_args)
 
                 result_parts.append(
                     types.Part.from_function_response(
@@ -581,6 +823,7 @@ class ToolAgent:
             # Check for missing required params BEFORE adding tool_calls to messages.
             # For Groq, returning early avoids leaving an orphaned tool_call in history.
             first_question: Optional[str] = None
+            confirm_evt: Optional[Dict[str, Any]] = None
             for tc in msg_out.tool_calls:
                 _tname = tc.function.name
                 try:
@@ -593,11 +836,20 @@ class ToolAgent:
                     if self.config.debug:
                         print(f"⏳ Intent pendiente ({_tname}): {_q}")
                     break
+                _confirm = self._maybe_build_dry_run(_tname, _targs)
+                if _confirm:
+                    confirm_evt = _confirm
+                    break
 
             if first_question:
                 self.state.add_assistant(first_question)
                 self._save_message("assistant", first_question)
                 return first_question
+            if confirm_evt:
+                text = self._render_dry_run_prompt(confirm_evt)
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
 
             # All params present — añadir respuesta al historial y ejecutar
             messages.append({
@@ -627,9 +879,7 @@ class ToolAgent:
                 if self.config.debug:
                     print(f"🔧 Groq usa: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
 
-                tool_out = self.registry.call(tool_name, tool_args)
-                self.intent_tracker.on_tool_executed(tool_name)
-                self._save_tool_event(tool_name, tool_args, tool_out)
+                tool_out = self._execute_tool(tool_name, tool_args)
 
                 messages.append({
                     "role": "tool",
@@ -725,6 +975,7 @@ class ToolAgent:
 
             # Check for missing required params BEFORE adding tool_calls to messages
             first_question_ollama: Optional[str] = None
+            confirm_evt_ollama: Optional[Dict[str, Any]] = None
             for tc in tool_calls:
                 _func = tc.get("function", {})
                 _tname = _func.get("name", "")
@@ -742,11 +993,20 @@ class ToolAgent:
                     if self.config.debug:
                         print(f"⏳ Intent pendiente ({_tname}): {_q}")
                     break
+                _confirm = self._maybe_build_dry_run(_tname, _targs)
+                if _confirm:
+                    confirm_evt_ollama = _confirm
+                    break
 
             if first_question_ollama:
                 self.state.add_assistant(first_question_ollama)
                 self._save_message("assistant", first_question_ollama)
                 return first_question_ollama
+            if confirm_evt_ollama:
+                text = self._render_dry_run_prompt(confirm_evt_ollama)
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
 
             messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
 
@@ -762,9 +1022,7 @@ class ToolAgent:
                 else:
                     tool_args = tool_args_raw
 
-                tool_out = self.registry.call(tool_name, tool_args)
-                self.intent_tracker.on_tool_executed(tool_name)
-                self._save_tool_event(tool_name, tool_args, tool_out)
+                tool_out = self._execute_tool(tool_name, tool_args)
                 messages.append({"role": "tool", "content": json.dumps(tool_out, ensure_ascii=False)})
 
         msg = "Límite de tool loops alcanzado."
@@ -809,8 +1067,13 @@ class ToolAgent:
             if self.config.debug:
                 print(f"🔧 Groq text-call: {name}({json.dumps(args, ensure_ascii=False)[:80]})")
             try:
-                out = self.registry.call(name, args)
-                self._save_tool_event(name, args, out)
+                confirm_evt = self._maybe_build_dry_run(name, args)
+                if confirm_evt:
+                    parts.append(
+                        f"[{name}] {json.dumps(confirm_evt, ensure_ascii=False)}"
+                    )
+                    continue
+                out = self._execute_tool(name, args)
                 parts.append(f"[{name}] {json.dumps(out, ensure_ascii=False)}")
             except Exception as e:
                 parts.append(f"[{name}] Error: {e}")
@@ -825,6 +1088,14 @@ class ToolAgent:
         user_text = (user_text or "").strip()
         if not user_text:
             return "Dime qué quieres que haga."
+
+        confirm_reply = self._handle_confirmation_turn(user_text)
+        if confirm_reply is not None:
+            self.state.add_user(user_text)
+            self._save_message("user", user_text)
+            self.state.add_assistant(confirm_reply)
+            self._save_message("assistant", confirm_reply)
+            return confirm_reply
 
         self.state.add_user(user_text)
         self._save_message("user", user_text)
@@ -857,6 +1128,15 @@ class ToolAgent:
         user_text = (user_text or "").strip()
         if not user_text:
             yield "Dime qué quieres que haga."
+            return
+
+        confirm_reply = self._handle_confirmation_turn(user_text)
+        if confirm_reply is not None:
+            self.state.add_user(user_text)
+            self._save_message("user", user_text)
+            self.state.add_assistant(confirm_reply)
+            self._save_message("assistant", confirm_reply)
+            yield confirm_reply
             return
 
         self.state.add_user(user_text)
@@ -936,8 +1216,20 @@ def tool_agent_from_settings(
     settings: Any,
     registry: Optional[ToolRegistry] = None,
     memory_store: Optional[Any] = None,
+    paths: Optional[Any] = None,
 ) -> ToolAgent:
     """Construye ToolAgent desde Settings."""
+    def _parse_list(raw: Any) -> List[str]:
+        if isinstance(raw, str):
+            return [x.strip() for x in raw.split(",") if x.strip()]
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if str(x).strip()]
+        return []
+
+    always_for = _parse_list(getattr(settings, "dry_run_always_for", []))
+    shell_deny_patterns = _parse_list(getattr(settings, "shell_deny_patterns", []))
+    shell_confirm_patterns = _parse_list(getattr(settings, "shell_confirm_patterns", []))
+
     cfg = ToolAgentConfig(
         # Claude
         use_claude=bool(getattr(settings, "use_claude", False)),
@@ -957,5 +1249,32 @@ def tool_agent_from_settings(
         debug=bool(getattr(settings, "debug", False)),
         max_tool_loops=8,
         enable_memory=True,
+        dry_run_enabled=bool(getattr(settings, "dry_run_enabled", True)),
+        dry_run_ttl_seconds=int(getattr(settings, "dry_run_ttl_seconds", 120)),
+        dry_run_always_for=always_for,
+        dry_run_max_items_list=int(getattr(settings, "dry_run_max_items_list", 20)),
+        dry_run_snippet_chars=int(getattr(settings, "dry_run_snippet_chars", 300)),
+        # Compatibilidad con config anterior
+        confirm_policy_enabled=bool(getattr(settings, "confirm_policy_enabled", True)),
+        confirm_ttl_seconds=int(getattr(settings, "confirm_ttl_seconds", 120)),
+        confirm_always_for=_parse_list(getattr(settings, "confirm_always_for", [])),
+        shell_guard_enabled=bool(getattr(settings, "shell_guard_enabled", True)),
+        shell_guard_mode=str(getattr(settings, "shell_guard_mode", "strict")),
+        shell_deny_patterns=shell_deny_patterns,
+        shell_confirm_patterns=shell_confirm_patterns,
+        verifier_enabled=bool(getattr(settings, "verifier_enabled", True)),
+        verifier_timeout_ms=int(getattr(settings, "verifier_timeout_ms", 1500)),
+        verifier_max_items=int(getattr(settings, "verifier_max_items", 50)),
+        verifier_sample_if_over=int(getattr(settings, "verifier_sample_if_over", 200)),
+        verifier_strict=bool(getattr(settings, "verifier_strict", False)),
     )
-    return ToolAgent(cfg, registry=registry, memory_store=memory_store)
+    confirm_context = {
+        "project_root": getattr(paths, "project_root", Path.cwd()),
+        "data_dir": getattr(paths, "data_dir", Path.cwd() / "data"),
+    }
+    return ToolAgent(
+        cfg,
+        registry=registry,
+        memory_store=memory_store,
+        confirm_context=confirm_context,
+    )

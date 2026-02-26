@@ -31,26 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
-# Lista corta de patrones extremadamente peligrosos (cortafuegos básico)
-# Nota: esto es intencionalmente simple. Luego lo haremos más robusto.
-DANGEROUS_PATTERNS = [
-    "rm -rf /",
-    "rm -rf /*",
-    "mkfs",
-    "dd if=",
-    ":(){ :|:& };:",  # fork bomb clásica
-    "shutdown",
-    "reboot",
-    "halt",
-    "nvram",
-]
-
-
-def _is_dangerous(command: str) -> bool:
-    """Detecta si un comando contiene un patrón peligroso básico."""
-    cmd = command.lower().strip()
-    return any(pat in cmd for pat in DANGEROUS_PATTERNS)
+from jarvis.tools.shell_guard import analyze_shell_command
 
 
 def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,12 +67,39 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
     allow_dangerous = bool(args.get("allow_dangerous", False))
     use_shell = bool(args.get("shell", True))
 
-    # Cortafuegos básico
-    if (not allow_dangerous) and _is_dangerous(command):
-        raise RuntimeError(
-            "Comando bloqueado por cortafuegos básico (muy destructivo). "
-            "Si de verdad quieres ejecutarlo, pasa allow_dangerous=True."
-        )
+    # Guardia central de shell: no ejecutar deny/confirm desde la tool.
+    decision = analyze_shell_command(
+        command,
+        cwd=str(args.get("cwd", "") or ""),
+        mode=str(args.get("shell_guard_mode", "strict")),
+        deny_patterns=args.get("shell_deny_patterns") or [],
+        confirm_patterns=args.get("shell_confirm_patterns") or [],
+    )
+    if decision.decision == "deny":
+        return {
+            "ok": False,
+            "type": "deny",
+            "error": (
+                f"Bloqueado por seguridad: {decision.reason}. "
+                "Si querías borrar una ruta concreta, indica la ruta exacta "
+                "y confirma explícitamente."
+            ),
+            "risk_level": decision.risk_level,
+            "matches": decision.matches,
+            "command": decision.normalized_command,
+        }
+    if decision.decision == "confirm" and not allow_dangerous:
+        return {
+            "ok": False,
+            "type": "dry_run",
+            "requires_confirmation": True,
+            "error": "Comando sensible; requiere confirmación previa en el agente.",
+            "risk_level": decision.risk_level,
+            "reason": decision.reason,
+            "matches": decision.matches,
+            "command": decision.normalized_command,
+            "cwd": str(args.get("cwd", "") or ""),
+        }
 
     # Directorio de trabajo (si lo pasan)
     cwd_path: Optional[Path] = None

@@ -239,7 +239,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         from jarvis.memory.store import MemoryStore
 
         memory_store = MemoryStore(paths.db_path)
-        agent = tool_agent_from_settings(settings, memory_store=memory_store)
+        agent = tool_agent_from_settings(settings, memory_store=memory_store, paths=paths)
 
         wake_cfg = WakeWordConfig(
             engine=settings.wake_word_engine,
