@@ -396,49 +396,70 @@ class JarvisView(AppKit.NSView):
         bg_path.setLineWidth_(1.0)
         bg_path.stroke()
 
-        # ── Rejilla binaria animada tipo referencia ────────────────────────
-        rows = 12
-        cols = 26
-        mx = 14.0
-        my = 12.0
-        cell_w = (block_w - mx * 2.0) / cols
-        cell_h = (block_h - my * 2.0) / rows
+        # ── Fondo aurora + barras de audio ─────────────────────────────────
+        # Auroras suaves que reaccionan al audio y fase de escucha.
+        AppKit.NSGraphicsContext.currentContext().saveGraphicsState()
+        shadow = AppKit.NSShadow.alloc().init()
+        shadow.setShadowBlurRadius_(22.0)
+        shadow.setShadowOffset_(AppKit.NSSize(0.0, 0.0))
+        shadow.setShadowColor_(AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, 0.30))
+        shadow.set()
 
-        font = (
-            AppKit.NSFont.fontWithName_size_('Monaco', 11.0) or
-            AppKit.NSFont.fontWithName_size_('Menlo', 11.0) or
-            AppKit.NSFont.monospacedSystemFontOfSize_weight_(11.0, AppKit.NSFontWeightRegular)
-        )
+        ribbon_count = 3
+        for i in range(ribbon_count):
+            phase = self._grid_phase * (0.85 + 0.18 * i)
+            amp = 16.0 + i * 12.0 + al * 26.0
+            base_y = y0 + block_h * (0.25 + 0.18 * i)
 
-        for r in range(rows):
-            for c in range(cols):
-                px = x0 + mx + c * cell_w
-                py = y0 + my + (rows - r - 1) * cell_h
+            path = AppKit.NSBezierPath.bezierPath()
+            path.setLineWidth_(2.4 + i * 0.7)
+            path.moveToPoint_(AppKit.NSMakePoint(x0 + 18.0, base_y))
 
-                # Máscara orgánica horizontal similar a la captura (bandas + recortes)
-                wave = math.sin(c * 0.17 + r * 0.41 + self._grid_phase * 1.2)
-                ridge = math.sin(r * 0.95 - self._grid_phase * 0.55)
-                band_cut = abs(math.sin(r * 0.68 + self._grid_phase * 0.35)) > 0.96
-                if band_cut:
-                    continue
+            steps = 6
+            for c in range(1, steps + 1):
+                t = c / steps
+                px = x0 + 18.0 + t * (block_w - 36.0)
+                wave = math.sin(phase + c * 0.9 + i * 0.5)
+                py = base_y + wave * amp + math.sin(self._listen_phase * 0.6 + c) * 6.0
+                path.lineToPoint_(AppKit.NSMakePoint(px, py))
 
-                density = 0.42 + 0.34 * wave + 0.22 * ridge
-                if self._state == 'listening':
-                    density += 0.18 * math.sin((c * 0.6) - self._listen_phase * 2.2)
-                if density < 0.18:
-                    continue
+            color = AppKit.NSColor.colorWithRed_green_blue_alpha_(
+                ar,
+                max(0.0, ag - 0.1 * i),
+                max(0.0, ab - 0.2 * i),
+                0.55 - i * 0.12,
+            )
+            color.set()
+            path.stroke()
+        AppKit.NSGraphicsContext.currentContext().restoreGraphicsState()
 
-                bit = '0' if math.sin(c * 0.71 + r * 0.33 + self._grid_phase * 2.2) > 0.35 else '1'
-                alpha = min(0.98, 0.44 + 0.42 * max(0.0, density))
-                color = AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, alpha)
-                s = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                    bit,
-                    {
-                        AppKit.NSFontAttributeName: font,
-                        AppKit.NSForegroundColorAttributeName: color,
-                    },
-                )
-                s.drawAtPoint_(AppKit.NSMakePoint(px, py))
+        # Bruma de fondo granulada para dar volumen.
+        AppKit.NSGraphicsContext.currentContext().saveGraphicsState()
+        blob_count = 36
+        for i in range(blob_count):
+            jitter = random.random()
+            px = x0 + 10.0 + random.random() * (block_w - 20.0)
+            py = y0 + 10.0 + random.random() * (block_h - 20.0)
+            radius = 4.0 + random.random() * 18.0 * (0.6 + al)
+            alpha = 0.04 + 0.08 * (1.0 - jitter)
+            color = AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, alpha)
+            AppKit.NSColor.setFillColor_(color)
+            circle = AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                AppKit.NSMakeRect(px - radius, py - radius, radius * 2.0, radius * 2.0)
+            )
+            circle.fill()
+        AppKit.NSGraphicsContext.currentContext().restoreGraphicsState()
+
+        # Mini ecualizador inferior como feedback inmediato de voz.
+        bar_count = 18
+        bar_w = (block_w - 24.0) / bar_count
+        for i in range(bar_count):
+            energy = al * 0.9 + 0.35 * math.sin(self._listen_phase * 1.8 + i * 0.6)
+            height = max(6.0, 12.0 + energy * 46.0 * (0.6 + random.random() * 0.4))
+            bx = x0 + 12.0 + i * bar_w
+            by = y0 + 10.0
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, 0.28 + energy * 0.35).set()
+            AppKit.NSRectFill(AppKit.NSMakeRect(bx, by, bar_w - 2.0, height))
 
         # Barra de barrido en modo escucha para feedback inmediato.
         if self._state == 'listening':
