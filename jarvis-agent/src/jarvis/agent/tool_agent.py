@@ -28,6 +28,7 @@ from jarvis.agent.confirm_policy import (
 )
 from jarvis.agent.dry_run import build_preview, build_summary, infer_risk, is_sensitive
 from jarvis.agent.intent_tracker import IntentTracker
+from jarvis.agent.prompt_guard import scan_tool_args
 from jarvis.agent.pending_actions import PendingActionStore
 from jarvis.agent.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_GROQ
 from jarvis.agent.runner import AgentConfig
@@ -286,6 +287,23 @@ class ToolAgent:
             return normalized, None
 
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        # Escanear args en busca de patrones de inyección antes de ejecutar
+        inj = scan_tool_args(tool_name, tool_args)
+        if inj.detected:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "prompt_guard: %s en tool '%s'", inj.message, tool_name
+            )
+            if inj.risk_level == "high":
+                return {
+                    "ok": False,
+                    "type": "injection_blocked",
+                    "error": (
+                        "Petición bloqueada: se detectó un patrón de inyección "
+                        "en los argumentos de la tool."
+                    ),
+                }
+
         validated_args, input_err = self._validate_tool_input(tool_name, tool_args)
         if input_err is not None:
             return input_err

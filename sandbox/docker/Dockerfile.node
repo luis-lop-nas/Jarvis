@@ -1,15 +1,18 @@
 FROM node:20-slim
 
+# Pinear versiones para builds reproducibles
 RUN npm install -g \
-    lodash \
-    axios \
-    moment
+    "lodash@4.17.21" \
+    "axios@1.7.2" \
+    "moment@2.30.1" \
+    && npm cache clean --force
 
 WORKDIR /workspace
 
-RUN useradd -m jarvis && \
+# Usuario sin privilegios — el contenedor no corre como root
+RUN useradd --no-log-init -m jarvis && \
     chown -R jarvis:jarvis /workspace
 
 USER jarvis
 
-ENTRYPOINT ["node"]
+ENTRYPOINT ["node", "--disallow-code-generation-from-strings"]

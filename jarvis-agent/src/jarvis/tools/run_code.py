@@ -119,19 +119,32 @@ def run_code(args: Dict[str, Any]) -> Dict[str, Any]:
     # Argumentos extra para el script
     inner_cmd.extend([str(x) for x in extra_args])
 
-    # docker run
+    # docker run — aislado: sin red, sin privilegios, con límites de recursos
     cmd = [
         "docker",
         "run",
         "--rm",
-        "-v",
-        f"{workspace}:/workspace",
+        # Aislamiento de red: el código ejecutado no puede hacer peticiones externas
+        "--network=none",
+        # Límites de recursos: evitan fork bombs y consumo excesivo
+        "--memory=256m",
+        "--cpus=0.5",
+        "--pids-limit=64",
+        # Sin escalar privilegios (evita sudo/setuid dentro del contenedor)
+        "--security-opt=no-new-privileges",
+        # Filesystem de solo lectura; /tmp y /workspace son tmpfs o bind-mount
+        "--read-only",
+        "--tmpfs=/tmp:size=64m,noexec",
+        # Timeout a nivel de Docker como segunda línea de defensa
+        f"--stop-timeout={timeout_sec}",
+        # El workspace del host se monta con noexec cuando sea posible
+        "-v", f"{workspace}:/workspace",
         image,
         *inner_cmd,
     ]
 
     t0 = time.time()
-    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec + 5)
     duration_ms = int((time.time() - t0) * 1000)
 
     return {

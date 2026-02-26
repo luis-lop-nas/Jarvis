@@ -1,0 +1,81 @@
+# =========================
+# Secrets / credenciales
+# =========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+
+# Token IPC generado en runtime
+.jarvis/ipc.token
+**/.jarvis/ipc.token
+
+# =========================
+# Base de datos del usuario
+# =========================
+**/data/jarvis.db
+**/data/logs/
+**/data/workspace/
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# =========================
+# Swift / Xcode
+# =========================
+*.xcworkspace/
+*.xcuserdata/
+DerivedData/
+.build/
+*.o
+*.d
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# macOS
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# =========================
+# Editores
+# =========================
+.vscode/
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo

@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import sounddevice as sd
 
+from jarvis.agent.circuit_breaker import LLMCircuitBreaker
 from jarvis.agent.tool_agent import ToolAgent, ToolAgentConfig, tool_agent_from_settings
 from jarvis.memory.store import MemoryStore
 from jarvis.tools.registry import ToolRegistry, ToolSpec, build_default_registry
@@ -369,6 +370,10 @@ class JarvisDaemon:
 
         # ── Chat panel (se asigna desde main.py tras crear el panel)
         self._chat_panel = None
+
+        # ── Circuit breaker para el LLM
+        # 3 fallos consecutivos → espera 30s antes de reintentar
+        self._llm_cb = LLMCircuitBreaker(failure_threshold=3, recovery_timeout=30.0)
 
         # ── Silero VAD (lazy load en primer uso)
         self._silero: Optional[_SileroVAD] = None
@@ -1075,7 +1080,24 @@ class JarvisDaemon:
 
                 return
 
-            response = self.agent.run(augmented)
+            # ── Circuit breaker: si el LLM ha fallado repetidamente, esperar
+            if not self._llm_cb.allow_call():
+                remaining = int(self._llm_cb._timeout - (time.time() - (self._llm_cb._opened_at or 0)))
+                response = (
+                    f"El servicio de IA no está disponible temporalmente. "
+                    f"Reintentando en ~{max(0, remaining)}s."
+                )
+                self.bridge.set_state("error")
+                self._hud.show_text(response)
+                return
+
+            try:
+                response = self.agent.run(augmented)
+                self._llm_cb.record_success()
+            except Exception as llm_err:
+                self._llm_cb.record_failure()
+                raise llm_err
+
             # ── Actualizar tracker con la respuesta del LLM
             self.agent.intent_tracker.analyze_llm_response(response)
 

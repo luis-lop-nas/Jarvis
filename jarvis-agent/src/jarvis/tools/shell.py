@@ -1,4 +1,4 @@
-"""
+“””
 shell.py
 
 Tool: shell
@@ -6,21 +6,19 @@ Ejecuta comandos del sistema en macOS.
 
 Objetivo:
 - Permitir a Jarvis ejecutar tareas reales usando la terminal:
-  - navegar carpetas
-  - git
-  - instalar deps
-  - lanzar scripts
-  - etc.
+  - navegar carpetas, git, instalar deps, lanzar scripts, etc.
 
-Seguridad (tu “cortafuegos”):
-- Por defecto permite casi todo, PERO bloquea patrones muy destructivos por error.
-- Puedes desactivar el firewall desde args: {"allow_dangerous": True}
-  (más adelante lo controlaremos desde settings/política).
-
-IMPORTANTE:
-- Esta tool ejecuta comandos en tu máquina. Úsala con cabeza.
-- Aun con “permiso total”, un mínimo de protección evita borrados accidentales.
-"""
+Seguridad:
+- Todos los comandos pasan por analyze_shell_command() en shell_guard.py.
+  - “deny”    → bloqueado inmediatamente (sin ejecución).
+  - “confirm” → devuelve dry_run al agente; el usuario debe confirmar
+                ANTES de que se ejecute (gestionado en tool_agent.py).
+  - “allow”   → se ejecuta directamente.
+- El parámetro allow_dangerous fue eliminado: la política de confirmación
+  se gestiona exclusivamente por el agente (tool_agent._maybe_build_dry_run),
+  nunca por los args generados por el LLM.
+- stdout/stderr se truncan a MAX_OUTPUT_CHARS para evitar volcar datos enormes.
+“””
 
 from __future__ import annotations
 
@@ -33,6 +31,9 @@ from typing import Any, Dict, List, Optional
 
 from jarvis.tools.shell_guard import analyze_shell_command
 
+# Límite de salida: evita que stdout/stderr enormes saturen el contexto del LLM
+MAX_OUTPUT_CHARS = 20_000
+
 
 def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -43,9 +44,10 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
       - cwd: str (opcional) directorio de trabajo
       - timeout_sec: int (opcional, default 30)
       - env: dict (opcional) variables de entorno extra
-      - allow_dangerous: bool (opcional, default False) desactiva firewall básico
       - shell: bool (opcional, default True) ejecuta como shell string (zsh)
-        * Nota: usar shell=True permite pipes/redirecciones, etc.
+
+    Note: el parámetro `allow_dangerous` fue eliminado. La política de
+    confirmación la gestiona el agente (tool_agent._maybe_build_dry_run).
 
     Returns:
       {
@@ -64,10 +66,9 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
     cwd = args.get("cwd")
     timeout_sec = int(args.get("timeout_sec", 30))
     env_extra = args.get("env") or {}
-    allow_dangerous = bool(args.get("allow_dangerous", False))
     use_shell = bool(args.get("shell", True))
 
-    # Guardia central de shell: no ejecutar deny/confirm desde la tool.
+    # Guardia central: deny → bloqueado; confirm → el agente lo maneja antes de llegar aquí
     decision = analyze_shell_command(
         command,
         cwd=str(args.get("cwd", "") or ""),
@@ -81,19 +82,20 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
             "type": "deny",
             "error": (
                 f"Bloqueado por seguridad: {decision.reason}. "
-                "Si querías borrar una ruta concreta, indica la ruta exacta "
-                "y confirma explícitamente."
+                "Indica una ruta/acción específica y segura para continuar."
             ),
             "risk_level": decision.risk_level,
             "matches": decision.matches,
             "command": decision.normalized_command,
         }
-    if decision.decision == "confirm" and not allow_dangerous:
+    # Para comandos "confirm": el agente debería haberlos interceptado antes con
+    # _maybe_build_dry_run. Si llegan aquí, los bloqueamos igualmente como precaución.
+    if decision.decision == "confirm":
         return {
             "ok": False,
             "type": "dry_run",
             "requires_confirmation": True,
-            "error": "Comando sensible; requiere confirmación previa en el agente.",
+            "error": "Comando sensible; requiere confirmación previa del usuario.",
             "risk_level": decision.risk_level,
             "reason": decision.reason,
             "matches": decision.matches,
@@ -148,11 +150,26 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
 
     duration_ms = int((time.time() - t0) * 1000)
 
-    return {
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+
+    # Truncar salidas muy largas para no saturar el contexto del LLM
+    truncated = False
+    if len(stdout) > MAX_OUTPUT_CHARS:
+        stdout = stdout[:MAX_OUTPUT_CHARS] + f"\n[... salida truncada a {MAX_OUTPUT_CHARS} chars]"
+        truncated = True
+    if len(stderr) > MAX_OUTPUT_CHARS:
+        stderr = stderr[:MAX_OUTPUT_CHARS] + f"\n[... stderr truncado a {MAX_OUTPUT_CHARS} chars]"
+        truncated = True
+
+    result: Dict[str, Any] = {
         "command": command,
         "cwd": str(cwd_path) if cwd_path else None,
         "returncode": completed.returncode,
-        "stdout": completed.stdout or "",
-        "stderr": completed.stderr or "",
+        "stdout": stdout,
+        "stderr": stderr,
         "duration_ms": duration_ms,
     }
+    if truncated:
+        result["truncated"] = True
+    return result

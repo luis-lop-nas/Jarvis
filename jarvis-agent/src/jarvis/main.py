@@ -7,10 +7,12 @@ Entry point del proyecto.
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Optional
 
 from jarvis.config import load_settings
+from jarvis.logging_setup import setup_logging
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -110,6 +112,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.debug:
         settings.debug = True  # type: ignore[attr-defined]
+
+    # Configurar logging estructurado con rotación (10 MB × 5 ficheros)
+    setup_logging(debug=bool(settings.debug), logs_dir=paths.logs_dir)
 
     if args.install_autostart:
         from jarvis.desktop.autostart import install_launch_agent

@@ -26,44 +26,81 @@ Seguridad:
 
 from __future__ import annotations
 
-import shutil
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# ── Límites de seguridad ──────────────────────────────────────────────────────
 
-# Directorios prohibidos (sistema crítico)
+# Límite de lectura: 10 MB. Evita que el LLM vuelque archivos enormes al contexto.
+MAX_READ_BYTES = 10 * 1024 * 1024
+
+# Límite de escritura: 10 MB. Evita escrituras explotables.
+MAX_WRITE_BYTES = 10 * 1024 * 1024
+
+# ── Directorios prohibidos ────────────────────────────────────────────────────
+
+# Directorios del sistema operativo (nunca tocar).
+# Nota: en macOS /etc → /private/etc, /var → /private/var/…
+# NO se bloquea /private/var completo porque contiene los directorios
+# temporales del usuario (/private/var/folders/…). Solo se bloquean
+# subdirectorios de sistema específicos.
 FORBIDDEN_DIRS = {
     "/System",
     "/Library/System",
     "/usr",
     "/bin",
     "/sbin",
-    "/private/var",
-    "/etc",
+    "/private/etc",         # equivale a /etc en macOS
+    "/etc",                 # Linux / macOS sin symlink
+    "/private/var/root",    # home de root en macOS
+    "/private/var/db",      # bases de datos del sistema
+    "/private/var/vm",      # memoria virtual
 }
 
-# Directorios permitidos del usuario
-ALLOWED_USER_DIRS = {
-    "Desktop",
-    "Documents",
-    "Downloads",
-    "Pictures",
-    "Music",
-    "Movies",
-    "Projects",
-}
+def _home_sensitive_dirs() -> set:
+    """
+    Directorios sensibles dentro del home del usuario.
+    Resueltos en tiempo de ejecución para evitar hardcodear el username.
+    """
+    home = Path.home()
+    return {
+        str(home / ".ssh"),          # claves SSH privadas
+        str(home / ".aws"),          # credenciales AWS
+        str(home / ".gnupg"),        # claves GPG
+        str(home / ".config"),       # configuraciones con tokens/keys
+        str(home / ".netrc"),        # credenciales FTP/HTTP
+        str(home / "Library" / "Keychains"),   # keychain macOS
+        str(home / "Library" / "Application Support" / "1Password"),
+    }
 
 
 def _is_safe_path(path: Path) -> bool:
-    """Verifica que el path sea seguro para operar."""
+    """
+    Verifica que el path sea seguro para operar.
+
+    Comprueba contra:
+    - Directorios del sistema (FORBIDDEN_DIRS)
+    - Directorios sensibles del usuario (~/.ssh, ~/.aws, etc.)
+    """
     path = path.resolve()
 
-    # Prevenir operaciones en directorios del sistema
+    # Directorios del sistema operativo
     for forbidden in FORBIDDEN_DIRS:
         forbidden_path = Path(forbidden).resolve()
         if path == forbidden_path or forbidden_path in path.parents:
             return False
+
+    # Directorios sensibles del usuario (claves, credenciales)
+    for sensitive in _home_sensitive_dirs():
+        sensitive_path = Path(sensitive).resolve()
+        try:
+            # Bloquear si el path ES el directorio sensible o está dentro de él
+            if path == sensitive_path or sensitive_path in path.parents:
+                return False
+        except Exception:
+            pass
 
     return True
 
@@ -139,12 +176,18 @@ def run_filesystem(args: Dict[str, Any]) -> Dict[str, Any]:
         if not user_path:
             raise ValueError("write_text requiere args['path'].")
         content = str(args.get("content", ""))
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_WRITE_BYTES:
+            raise ValueError(
+                f"Contenido demasiado grande: {len(encoded):,} bytes "
+                f"(límite: {MAX_WRITE_BYTES:,} bytes)"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return {
             "action": action,
             "path": str(target),
-            "bytes": len(content.encode("utf-8")),
+            "bytes": len(encoded),
         }
 
     if action == "read_text":
@@ -154,10 +197,16 @@ def run_filesystem(args: Dict[str, Any]) -> Dict[str, Any]:
             raise FileNotFoundError(f"No existe: {target}")
         if target.is_dir():
             raise IsADirectoryError(f"Es un directorio: {target}")
+        file_size = target.stat().st_size
+        if file_size > MAX_READ_BYTES:
+            raise ValueError(
+                f"Archivo demasiado grande para leer: {file_size:,} bytes "
+                f"(límite: {MAX_READ_BYTES:,} bytes). Usa una herramienta específica."
+            )
         return {
             "action": action,
             "path": str(target),
-            "content": target.read_text(encoding="utf-8"),
+            "content": target.read_text(encoding="utf-8", errors="replace"),
         }
 
     if action == "list_dir":

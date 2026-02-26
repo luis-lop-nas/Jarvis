@@ -1,17 +1,20 @@
 FROM python:3.11-slim
 
+# Pinear versiones para builds reproducibles y evitar actualizaciones inesperadas
 RUN pip install --no-cache-dir \
-    numpy \
-    pandas \
-    requests \
-    matplotlib \
-    pillow
+    "numpy==1.26.4" \
+    "pandas==2.2.2" \
+    "requests==2.32.3" \
+    "matplotlib==3.9.0" \
+    "pillow==10.4.0"
 
 WORKDIR /workspace
 
-RUN useradd -m jarvis && \
+# Usuario sin privilegios — el contenedor no corre como root
+RUN useradd --no-log-init -m jarvis && \
     chown -R jarvis:jarvis /workspace
 
 USER jarvis
 
-ENTRYPOINT ["python"]
+# Sin shell interactiva y sin entrypoint que permita ejecutar comandos arbitrarios
+ENTRYPOINT ["python", "-I"]

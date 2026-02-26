@@ -115,10 +115,32 @@ PYTHONPATH=src python -m jarvis
 
 ### Agente
 
-- `agent/tool_agent.py`.
+- `agent/tool_agent.py` — motor reactivo (bucles LLM hasta 8 iteraciones).
+- `agent/pev_agent.py` — pipeline **Planner → Executor → Verifier** (activado con `PEV_ENABLED=true`).
 - Prioridad de backends: **Claude -> Gemini -> Groq -> Ollama**.
 - Memoria persistente en SQLite (`memory/store.py`).
 - Intent multi-step para completar parámetros faltantes (`agent/intent_tracker.py`).
+- `tool_agent_from_settings()` devuelve `PEVAgent` si `PEV_ENABLED=true`, `ToolAgent` si no.
+
+### PEV Pipeline (Planner → Executor → Verifier)
+
+Archivos en `agent/`:
+- `pev_models.py` — `PlanStep`, `Plan`, `StepResult`, `RunState` (Pydantic + dataclasses).
+- `pev_state.py` — `RunStateStore` thread-safe con TTL (default 600 s).
+- `pev_prompts.py` — `PLANNER_SYSTEM_PROMPT`, `PLANNER_USER_TEMPLATE`, `SYNTHESIS_SYSTEM_PROMPT`.
+- `pev_agent.py` — clase principal; misma API pública que `ToolAgent`.
+
+Flujo:
+1. **Planner**: LLM genera JSON `Plan` sin ejecutar nada (sin tools en la llamada).
+2. **Executor**: itera pasos; resuelve `{{sN.field}}` entre pasos, pide confirmación para sensitivos, pausa para input de usuario.
+3. **Verifier**: valida output con `verifier.py` tras cada ejecución; reintenta si `retryable=True`.
+4. **Synthesizer**: resume resultados en lenguaje natural con el LLM.
+
+Manejo de estado entre turnos (`RunStateStore`):
+- `pending_confirmation_step` — esperando sí/no del usuario.
+- `pending_user_input_step` — esperando dato del usuario (step `requires_user_input=True`).
+
+Fallback: plan inválido (JSON malformado o sin `steps`) → `ToolAgent.run()` silencioso.
 
 ### Web
 
@@ -186,6 +208,13 @@ CAMERA_CONTEXT_FACE_ONLY=false
 # General
 DEBUG=false
 DATA_DIR=data
+
+# PEV Pipeline
+PEV_ENABLED=false
+PEV_MAX_STEPS=6
+PEV_RETRY_MAX=1
+PEV_STATE_TTL_SECONDS=600
+PEV_VERBOSE_TRACE=false
 ```
 
 ## Herramientas disponibles (21)
@@ -221,6 +250,7 @@ Registro real en `src/jarvis/tools/registry.py`:
 - `routines` tool: lectura/edición de rutinas en `data/routines.json`.
 - `camera_context`: inyección opcional de presencia/objetos captados por cámara.
 - `web_agent`: navegación autónoma con Playwright y confirmación para acciones sensibles.
+- **PEV Pipeline**: agente estructurado Planner → Executor → Verifier, activado con `PEV_ENABLED=true`.
 
 ## Debug y validación
 
@@ -268,4 +298,4 @@ pip install -e ".[rag]"
 
 ---
 
-Última actualización: 26 de febrero de 2026
+Última actualización: 27 de febrero de 2026
