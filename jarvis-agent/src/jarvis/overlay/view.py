@@ -251,8 +251,8 @@ class JarvisView(AppKit.NSView):
             return None
 
         # Margen visual para que no quede pegado a la esquina inferior izquierda.
-        self._orb_x = 150.0
-        self._orb_y = 120.0
+        self._orb_x = 168.0
+        self._orb_y = 92.0
         self._state = 'idle'
         self._audio_level = 0.0
         self._pal   = _PALETTES['idle']
@@ -368,8 +368,8 @@ class JarvisView(AppKit.NSView):
         ar, ag, ab = self._pal['a']   # color acento A (principal)
 
         # ── Bloque visual principal ────────────────────────────────────────
-        block_w = 300.0
-        block_h = 182.0
+        block_w = 206.0
+        block_h = 128.0
 
         # Animación diferenciada en estado listening: oscilación + respiración.
         if self._state == 'listening':
@@ -397,8 +397,8 @@ class JarvisView(AppKit.NSView):
         bg_path.stroke()
 
         # ── Rejilla binaria animada tipo referencia ────────────────────────
-        rows = 20
-        cols = 42
+        rows = 12
+        cols = 26
         mx = 14.0
         my = 12.0
         cell_w = (block_w - mx * 2.0) / cols
