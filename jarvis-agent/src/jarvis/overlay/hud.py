@@ -18,10 +18,13 @@ Características:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import logging
+from typing import Optional
 
 import AppKit
 import objc
+
+_log = logging.getLogger(__name__)
 
 
 _CHAMFER = 14.0    # px de corte en esquinas top-right y bottom-left
@@ -68,23 +71,26 @@ class _HUDBg(AppKit.NSView):
         self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect) -> None:
-        b  = self.bounds()
-        bx = b.origin.x
-        by = b.origin.y
-        bw = b.size.width
-        bh = b.size.height
+        try:
+            b  = self.bounds()
+            bx = b.origin.x
+            by = b.origin.y
+            bw = b.size.width
+            bh = b.size.height
 
-        path = _chamfer_path(bx, by, bw, bh)
+            path = _chamfer_path(bx, by, bw, bh)
 
-        # Fondo oscuro
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(*_BG).set()
-        path.fill()
+            # Fondo oscuro
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_BG).set()
+            path.fill()
 
-        # Borde en color acento
-        path.setLineWidth_(1.5)
-        ar, ag, ab = self._accent
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, 0.65).set()
-        path.stroke()
+            # Borde en color acento
+            path.setLineWidth_(1.5)
+            ar, ag, ab = self._accent
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, 0.65).set()
+            path.stroke()
+        except Exception:
+            _log.error("[_HUDBg] drawRect_ error (no fatal)", exc_info=True)
 
     def isOpaque(self) -> bool:
         return False
@@ -94,36 +100,48 @@ class _HUDBg(AppKit.NSView):
 
 class _HUDTimerTarget(AppKit.NSObject):
     def fire_(self, timer: AppKit.NSTimer) -> None:
-        hud = timer.userInfo()
-        if hud is not None:
-            hud._close()
+        try:
+            hud = timer.userInfo()
+            if hud is not None:
+                hud._close()
+        except Exception:
+            pass
 
 
 # ── Target de NSTimer para el dot pulsante ───────────────────────────────────
 
 class _DotTimerTarget(AppKit.NSObject):
     def fire_(self, timer: AppKit.NSTimer) -> None:
-        field = timer.userInfo()
-        if field is not None:
-            field._pulse_tick()
+        try:
+            field = timer.userInfo()
+            if field is not None:
+                field._pulse_tick()
+        except Exception:
+            pass
 
 
 # ── Target de NSTimer para el cursor parpadeante ─────────────────────────────
 
 class _CursorTimerTarget(AppKit.NSObject):
     def fire_(self, timer: AppKit.NSTimer) -> None:
-        hud = timer.userInfo()
-        if hud is not None:
-            hud._cursor_tick()
+        try:
+            hud = timer.userInfo()
+            if hud is not None:
+                hud._cursor_tick()
+        except Exception:
+            pass
 
 
 # ── Target de NSTimer para el typewriter ─────────────────────────────────────
 
 class _TypeTimerTarget(AppKit.NSObject):
     def fire_(self, timer: AppKit.NSTimer) -> None:
-        hud = timer.userInfo()
-        if hud is not None:
-            hud._type_tick()
+        try:
+            hud = timer.userInfo()
+            if hud is not None:
+                hud._type_tick()
+        except Exception:
+            pass
 
 
 # ── Dot pulsante ─────────────────────────────────────────────────────────────
@@ -161,15 +179,18 @@ class _PulsingDot(AppKit.NSView):
         self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect) -> None:
-        b  = self.bounds()
-        cx = b.size.width  / 2
-        cy = b.size.height / 2
-        rr = min(cx, cy)
-        ar, ag, ab = self._accent
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, self._alpha).set()
-        AppKit.NSBezierPath.bezierPathWithOvalInRect_(
-            AppKit.NSMakeRect(cx - rr, cy - rr, rr * 2, rr * 2)
-        ).fill()
+        try:
+            b  = self.bounds()
+            cx = b.size.width  / 2
+            cy = b.size.height / 2
+            rr = min(cx, cy)
+            ar, ag, ab = self._accent
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, self._alpha).set()
+            AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                AppKit.NSMakeRect(cx - rr, cy - rr, rr * 2, rr * 2)
+            ).fill()
+        except Exception:
+            _log.error("[_PulsingDot] drawRect_ error (no fatal)", exc_info=True)
 
     def isOpaque(self) -> bool:
         return False
@@ -300,11 +321,6 @@ class JarvisHUD:
         self._dot.set_accent(ar, ag, ab)
         self._bg.addSubview_(self._dot)
 
-        mono_font = (
-            AppKit.NSFont.fontWithName_size_('Monaco', 9.0) or
-            AppKit.NSFont.fontWithName_size_('Menlo', 9.0) or
-            AppKit.NSFont.monospacedSystemFontOfSize_weight_(9.0, AppKit.NSFontWeightRegular)
-        )
         header_lbl = AppKit.NSTextField.alloc().initWithFrame_(
             AppKit.NSMakeRect(self.PADDING_X + _DOT_SIZE + 6, _HEADER_Y - 1,
                               200, 14)

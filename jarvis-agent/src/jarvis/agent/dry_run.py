@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List
 
 from jarvis.tools.shell_guard import analyze_shell_command

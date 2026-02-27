@@ -17,7 +17,6 @@ Seguridad:
 """
 
 import json
-import os
 import secrets
 import socket
 import subprocess

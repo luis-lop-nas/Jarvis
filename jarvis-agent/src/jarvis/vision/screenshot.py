@@ -44,7 +44,6 @@ def capture_screen(output_path: Optional[Path] = None) -> tuple[Optional[Path], 
         height = Quartz.CGImageGetHeight(image)
         
         # Crear buffer de bytes
-        bytes_per_row = Quartz.CGImageGetBytesPerRow(image)
         pixel_data = Quartz.CGDataProviderCopyData(
             Quartz.CGImageGetDataProvider(image)
         )
@@ -128,7 +127,6 @@ def capture_active_window(output_path: Optional[Path] = None) -> tuple[Optional[
         # Convertir a PIL
         img_width = Quartz.CGImageGetWidth(image)
         img_height = Quartz.CGImageGetHeight(image)
-        bytes_per_row = Quartz.CGImageGetBytesPerRow(image)
         pixel_data = Quartz.CGDataProviderCopyData(
             Quartz.CGImageGetDataProvider(image)
         )

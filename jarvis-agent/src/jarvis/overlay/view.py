@@ -7,12 +7,15 @@ Inspiración: primeras interfaces de ordenador (CRT/terminal).
 
 from __future__ import annotations
 
+import logging
 import math
 import random
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import AppKit
 import objc
+
+_logger = logging.getLogger(__name__)
 
 
 # ── Paletas de color por estado ───────────────────────────────────────────────
@@ -336,35 +339,57 @@ class JarvisView(AppKit.NSView):
     # ── tick ──────────────────────────────────────────────────────────────────
 
     def tick_(self, timer):
-        cx, cy = self._orb_x, self._orb_y
-        al     = self._audio_level
-        self._crt_phase += 0.035
-        self._grid_phase += 0.04
-        if self._state == 'listening':
-            self._listen_phase += 0.20
-        else:
-            self._listen_phase += 0.08
+        try:
+            cx, cy = self._orb_x, self._orb_y
+            al     = self._audio_level
+            self._crt_phase += 0.035
+            self._grid_phase += 0.04
+            if self._state == 'listening':
+                self._listen_phase += 0.20
+            else:
+                self._listen_phase += 0.08
 
-        for p in self._particles_cloud:
-            p.update(cx, cy, al)
+            for p in self._particles_cloud:
+                p.update(cx, cy, al)
 
-        if self._fly_particles is not None:
-            self._fly_particles.update(1.0 / 30.0)
+            if self._fly_particles is not None:
+                self._fly_particles.update(1.0 / 30.0)
 
-        self.setNeedsDisplay_(True)
+            self.setNeedsDisplay_(True)
 
-        # proximidad: activar/desactivar mouse events según distancia del cursor
-        if self._window is not None:
-            loc  = AppKit.NSEvent.mouseLocation()
-            dx   = loc.x - cx
-            dy   = loc.y - cy
-            near = dx * dx + dy * dy <= _PROX_R ** 2
-            self._window.setIgnoresMouseEvents_(not near)
+            # proximidad: activar/desactivar mouse events según distancia del cursor
+            if self._window is not None:
+                loc  = AppKit.NSEvent.mouseLocation()
+                dx   = loc.x - cx
+                dy   = loc.y - cy
+                near = dx * dx + dy * dy <= _PROX_R ** 2
+                self._window.setIgnoresMouseEvents_(not near)
+        except Exception:
+            import traceback as _tb
+            _logger.error(
+                "[JarvisView] Excepción en tick_ (no fatal):\n%s",
+                _tb.format_exc(),
+            )
 
     # ── draw ──────────────────────────────────────────────────────────────────
 
     def drawRect_(self, dirty_rect):
+        try:
+          self.__draw(dirty_rect)
+        except Exception:
+            import traceback as _tb
+            try:
+                _logger.error(
+                    "[JarvisView] Excepción en drawRect_ (no fatal):\n%s",
+                    _tb.format_exc(),
+                )
+            except Exception:
+                print("[JarvisView] Excepción en drawRect_ (no fatal)")
+                print(_tb.format_exc())
+
+    def __draw(self, dirty_rect):
         cx, cy  = self._orb_x, self._orb_y
+        al = self._audio_level
         ar, ag, ab = self._pal['a']   # color acento A (principal)
 
         # ── Bloque visual principal ────────────────────────────────────────
@@ -443,7 +468,7 @@ class JarvisView(AppKit.NSView):
             radius = 4.0 + random.random() * 18.0 * (0.6 + al)
             alpha = 0.04 + 0.08 * (1.0 - jitter)
             color = AppKit.NSColor.colorWithRed_green_blue_alpha_(ar, ag, ab, alpha)
-            AppKit.NSColor.setFillColor_(color)
+            color.set()
             circle = AppKit.NSBezierPath.bezierPathWithOvalInRect_(
                 AppKit.NSMakeRect(px - radius, py - radius, radius * 2.0, radius * 2.0)
             )

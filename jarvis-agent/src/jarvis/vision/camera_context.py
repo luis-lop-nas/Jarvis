@@ -18,7 +18,6 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -120,6 +119,8 @@ class CameraContextAnalyzer:
     # ── Hilo interno ─────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
+        import cv2  # dependencia opcional: pip install -e ".[gestures]"
+        import numpy as np  # noqa: F401 — usado en _detect_face / _analyze_objects_groq
         cap = cv2.VideoCapture(self.cfg.camera_index)
         if not cap.isOpened():
             log.warning("CameraContextAnalyzer: no se pudo abrir cámara %d",
@@ -184,6 +185,7 @@ class CameraContextAnalyzer:
             return False, False
 
         try:
+            import cv2
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self._mp_face.process(rgb)
         except Exception as e:
@@ -220,6 +222,7 @@ class CameraContextAnalyzer:
             from groq import Groq
 
             # Reducir resolución para minimizar tokens y latencia
+            import cv2
             small = cv2.resize(frame, (640, 480))
             _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
             b64 = base64.b64encode(buf.tobytes()).decode()

@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -116,8 +116,24 @@ class _KokoroEngine:
 
     # ── Descarga ────────────────────────────────────────────────────────────
 
+    # Tamaños mínimos esperados (en bytes) para detectar descargas incompletas
+    _MIN_SIZES = {
+        "kokoro-v1.0.onnx": 300 * 1024 * 1024,   # > 300 MB
+        "voices-v1.0.bin":   10 * 1024 * 1024,   # > 10 MB
+    }
+
     def _download(self) -> bool:
-        """Descarga los ficheros del modelo si no existen. Retorna True si OK."""
+        """
+        Descarga los ficheros del modelo si no existen. Retorna True si OK.
+
+        Estrategia de descarga atómica:
+          1. Descarga a fichero temporal (<nombre>.tmp).
+          2. Muestra progreso en MB cada ~10%.
+          3. Verifica que el tamaño final supera el mínimo esperado.
+          4. Solo si la verificación pasa, renombra .tmp → destino final.
+          5. Si algo falla o el fichero es demasiado pequeño, borra el .tmp
+             y lanza una excepción descriptiva.
+        """
         import requests  # ya es dependencia principal
 
         self._model_dir.mkdir(parents=True, exist_ok=True)
@@ -131,24 +147,56 @@ class _KokoroEngine:
             dest = self._model_dir / filename
             if dest.exists():
                 continue
-            _logger.info("[Kokoro] Descargando %s (puede tardar unos minutos)...", filename)
+
+            tmp = dest.with_suffix(".tmp")
+            tmp.unlink(missing_ok=True)  # limpiar restos de descarga anterior
+
+            _logger.info(
+                "[Kokoro] Descargando %s (puede tardar unos minutos)...", filename
+            )
             try:
                 resp = requests.get(url, stream=True, timeout=300)
                 resp.raise_for_status()
                 total = int(resp.headers.get("content-length", 0))
+                total_mb = total / (1024 * 1024) if total else 0
                 downloaded = 0
-                with open(dest, "wb") as fh:
+                last_logged_pct = -1
+
+                with open(tmp, "wb") as fh:
                     for chunk in resp.iter_content(chunk_size=1024 * 1024):
                         fh.write(chunk)
                         downloaded += len(chunk)
                         if total:
                             pct = downloaded * 100 // total
-                            if pct % 10 == 0:
-                                _logger.info("[Kokoro] %s: %d%%", filename, pct)
-                _logger.info("[Kokoro] Descarga completada: %s", filename)
+                            if pct // 10 != last_logged_pct // 10:
+                                last_logged_pct = pct
+                                dl_mb = downloaded / (1024 * 1024)
+                                _logger.info(
+                                    "[Kokoro] Descargando %s... %.0f MB / %.0f MB (%d%%)",
+                                    filename, dl_mb, total_mb, pct,
+                                )
+
+                # Verificar tamaño mínimo antes de mover al destino final
+                actual_size = tmp.stat().st_size
+                min_size = self._MIN_SIZES.get(filename, 0)
+                if actual_size < min_size:
+                    tmp.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Descarga incompleta: {filename} tiene {actual_size / 1024 / 1024:.1f} MB "
+                        f"pero se esperan al menos {min_size / 1024 / 1024:.0f} MB. "
+                        "Puede que la descarga se haya interrumpido."
+                    )
+
+                # Mover al destino final solo cuando la descarga está 100% completa
+                tmp.rename(dest)
+                _logger.info(
+                    "[Kokoro] Descarga completada: %s (%.0f MB)",
+                    filename, actual_size / (1024 * 1024),
+                )
+
             except Exception as exc:
+                tmp.unlink(missing_ok=True)
                 _logger.error("[Kokoro] Error descargando %s: %s", filename, exc)
-                dest.unlink(missing_ok=True)
                 return False
 
         return True

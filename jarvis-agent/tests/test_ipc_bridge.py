@@ -11,18 +11,13 @@ Tests unitarios para SwiftOverlayBridge:
 from __future__ import annotations
 
 import json
-import socket
-import threading
 from pathlib import Path
-from typing import List
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from jarvis.overlay.swift_bridge import (
     MAX_MESSAGE_BYTES,
     SwiftOverlayBridge,
-    _TOKEN_FILE,
 )
 
 
@@ -68,7 +63,7 @@ class TestBridgeInit:
         token_path = tmp_path / "ipc.token"
         with patch("jarvis.overlay.swift_bridge._TOKEN_FILE", token_path):
             with patch("jarvis.overlay.swift_bridge._TOKEN_DIR", tmp_path):
-                bridge = SwiftOverlayBridge()
+                _ = SwiftOverlayBridge()
         if token_path.exists():
             mode = oct(token_path.stat().st_mode)[-3:]
             assert mode == "600", f"Permisos incorrectos: {mode}"

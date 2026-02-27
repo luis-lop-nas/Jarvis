@@ -11,13 +11,15 @@ Thread-safe: toggle() desde cualquier hilo.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import signal
-import threading
 import objc
 import AppKit
 from typing import Optional, Callable
+
+_log = logging.getLogger(__name__)
 
 # Zona de tracking: MouseEnteredAndExited | ActiveAlways
 _TRACK = 0x01 | 0x80
@@ -106,26 +108,29 @@ class _DarkPanelBg(AppKit.NSView):
             self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect) -> None:
-        b  = self.bounds()
-        bx = b.origin.x
-        by = b.origin.y
-        bw = b.size.width
-        bh = b.size.height
+        try:
+            b  = self.bounds()
+            bx = b.origin.x
+            by = b.origin.y
+            bw = b.size.width
+            bh = b.size.height
 
-        path = _chamfer_path(bx, by, bw, bh)
+            path = _chamfer_path(bx, by, bw, bh)
 
-        # Fondo
-        r, g, b_ = _BG
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b_, 0.93).set()
-        path.fill()
+            # Fondo
+            r, g, b_ = _BG
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(r, g, b_, 0.93).set()
+            path.fill()
 
-        # Borde: blanco tenue → cyan al hover
-        path.setLineWidth_(1.0)
-        if self._hover:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.50).set()
-        else:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
-        path.stroke()
+            # Borde: blanco tenue → cyan al hover
+            path.setLineWidth_(1.0)
+            if self._hover:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.50).set()
+            else:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
+            path.stroke()
+        except Exception:
+            _log.error("[_DarkPanelBg] drawRect_ error (no fatal)", exc_info=True)
 
     def isOpaque(self) -> bool:
         return False
@@ -185,57 +190,60 @@ class _DarkBtn(AppKit.NSView):
             self._action()
 
     def drawRect_(self, rect) -> None:
-        b  = self.bounds()
-        bx = b.origin.x
-        by = b.origin.y
-        bw = b.size.width
-        bh = b.size.height
+        try:
+            b  = self.bounds()
+            bx = b.origin.x
+            by = b.origin.y
+            bw = b.size.width
+            bh = b.size.height
 
-        path = _chamfer_path(bx, by, bw, bh, cut=5.0)
+            path = _chamfer_path(bx, by, bw, bh, cut=5.0)
 
-        # Fondo
-        if self._hover:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.10).set()
-        else:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.04).set()
-        path.fill()
+            # Fondo
+            if self._hover:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.10).set()
+            else:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.04).set()
+            path.fill()
 
-        # Borde
-        path.setLineWidth_(0.8)
-        if self._hover:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.55).set()
-        else:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
-        path.stroke()
+            # Borde
+            path.setLineWidth_(0.8)
+            if self._hover:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.55).set()
+            else:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
+            path.stroke()
 
-        # Icono bezier (centrado horizontalmente, parte superior)
-        if self._draw_icon:
-            icon_alpha = 0.90 if self._hover else 0.60
-            self._draw_icon(bw / 2, bh * 0.58, icon_alpha)
+            # Icono bezier (centrado horizontalmente, parte superior)
+            if self._draw_icon:
+                icon_alpha = 0.90 if self._hover else 0.60
+                self._draw_icon(bw / 2, bh * 0.58, icon_alpha)
 
-        # Etiqueta monospace
-        lbl_font = (
-            AppKit.NSFont.fontWithName_size_('SF Mono', 7.5) or
-            AppKit.NSFont.fontWithName_size_('Menlo', 7.5) or
-            AppKit.NSFont.monospacedSystemFontOfSize_weight_(7.5, AppKit.NSFontWeightBold)
-        )
-        if self._hover:
-            lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.95)
-        else:
-            lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.35)
+            # Etiqueta monospace
+            lbl_font = (
+                AppKit.NSFont.fontWithName_size_('SF Mono', 7.5) or
+                AppKit.NSFont.fontWithName_size_('Menlo', 7.5) or
+                AppKit.NSFont.monospacedSystemFontOfSize_weight_(7.5, AppKit.NSFontWeightBold)
+            )
+            if self._hover:
+                lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.95)
+            else:
+                lbl_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.35)
 
-        lbl_a = {
-            AppKit.NSFontAttributeName: lbl_font,
-            AppKit.NSForegroundColorAttributeName: lbl_color,
-        }
-        lbl_s = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-            self._label, lbl_a
-        )
-        lsz = lbl_s.size()
-        lbl_s.drawAtPoint_(AppKit.NSMakePoint(
-            bw / 2 - lsz.width / 2,
-            bh * 0.14,
-        ))
+            lbl_a = {
+                AppKit.NSFontAttributeName: lbl_font,
+                AppKit.NSForegroundColorAttributeName: lbl_color,
+            }
+            lbl_s = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                self._label, lbl_a
+            )
+            lsz = lbl_s.size()
+            lbl_s.drawAtPoint_(AppKit.NSMakePoint(
+                bw / 2 - lsz.width / 2,
+                bh * 0.14,
+            ))
+        except Exception:
+            _log.error("[_DarkBtn] drawRect_ error (no fatal)", exc_info=True)
 
 
 # ── Botón × cierre ────────────────────────────────────────────────────────────
@@ -286,35 +294,38 @@ class _DarkCloseBtn(AppKit.NSView):
             self._action()
 
     def drawRect_(self, rect) -> None:
-        b  = self.bounds()
-        cx = b.size.width  / 2
-        cy = b.size.height / 2
+        try:
+            b  = self.bounds()
+            cx = b.size.width  / 2
+            cy = b.size.height / 2
 
-        circle = AppKit.NSBezierPath.bezierPathWithOvalInRect_(b)
-        # fondo oscuro
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.90).set()
-        circle.fill()
-        # borde
-        circle.setLineWidth_(0.8)
-        if self._hover:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.80).set()
-        else:
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.25).set()
-        circle.stroke()
+            circle = AppKit.NSBezierPath.bezierPathWithOvalInRect_(b)
+            # fondo oscuro
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.03, 0.03, 0.07, 0.90).set()
+            circle.fill()
+            # borde
+            circle.setLineWidth_(0.8)
+            if self._hover:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(*_CYAN, 0.80).set()
+            else:
+                AppKit.NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.25).set()
+            circle.stroke()
 
-        # ×
-        p = AppKit.NSBezierPath.bezierPath()
-        p.setLineWidth_(1.2)
-        p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
-        AppKit.NSColor.colorWithRed_green_blue_alpha_(
-            1, 1, 1, 0.90 if self._hover else 0.50
-        ).set()
-        s = 2.8
-        p.moveToPoint_(AppKit.NSMakePoint(cx - s, cy - s))
-        p.lineToPoint_(AppKit.NSMakePoint(cx + s, cy + s))
-        p.moveToPoint_(AppKit.NSMakePoint(cx + s, cy - s))
-        p.lineToPoint_(AppKit.NSMakePoint(cx - s, cy + s))
-        p.stroke()
+            # ×
+            p = AppKit.NSBezierPath.bezierPath()
+            p.setLineWidth_(1.2)
+            p.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(
+                1, 1, 1, 0.90 if self._hover else 0.50
+            ).set()
+            s = 2.8
+            p.moveToPoint_(AppKit.NSMakePoint(cx - s, cy - s))
+            p.lineToPoint_(AppKit.NSMakePoint(cx + s, cy + s))
+            p.moveToPoint_(AppKit.NSMakePoint(cx + s, cy - s))
+            p.lineToPoint_(AppKit.NSMakePoint(cx - s, cy + s))
+            p.stroke()
+        except Exception:
+            _log.error("[_DarkCloseBtn] drawRect_ error (no fatal)", exc_info=True)
 
 
 # ── Detector hover del panel completo ────────────────────────────────────────
@@ -418,26 +429,33 @@ class _PanelAnimator(AppKit.NSObject):
             self._timer = None
 
     def animTick_(self, timer) -> None:
-        self._progress = min(1.0, self._progress + self._step)
+        try:
+            self._progress = min(1.0, self._progress + self._step)
 
-        # ease-out quint: 1 - (1-p)^5
-        inv = 1.0 - self._progress
-        t   = 1.0 - inv * inv * inv * inv * inv
+            # ease-out quint: 1 - (1-p)^5
+            inv = 1.0 - self._progress
+            t   = 1.0 - inv * inv * inv * inv * inv
 
-        x     = self._from_x + (self._to_x - self._from_x) * t
-        alpha = t if self._fade_in else (1.0 - t)
+            x     = self._from_x + (self._to_x - self._from_x) * t
+            alpha = t if self._fade_in else (1.0 - t)
 
-        if self._panel is not None:
-            self._panel.setFrameOrigin_(AppKit.NSMakePoint(x, self._y))
-            self._panel.setAlphaValue_(alpha)
+            if self._panel is not None:
+                self._panel.setFrameOrigin_(AppKit.NSMakePoint(x, self._y))
+                self._panel.setAlphaValue_(alpha)
 
-        if self._progress >= 1.0:
-            timer.invalidate()
-            self._timer = None
-            cb = self._on_done
-            self._on_done = None
-            if cb is not None:
-                cb()
+            if self._progress >= 1.0:
+                timer.invalidate()
+                self._timer = None
+                cb = self._on_done
+                self._on_done = None
+                if cb is not None:
+                    cb()
+        except Exception:
+            _log.error("[_PanelAnimator] animTick_ error (no fatal)", exc_info=True)
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
 
 
 # ── Panel principal ───────────────────────────────────────────────────────────

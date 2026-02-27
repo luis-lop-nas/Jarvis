@@ -7,7 +7,6 @@ Consulta el clima actual de cualquier ciudad usando wttr.in (sin API key).
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List
 
 import requests

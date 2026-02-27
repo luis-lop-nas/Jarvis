@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 def run_open_app(args: Dict[str, Any]) -> Dict[str, Any]:

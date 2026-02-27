@@ -12,10 +12,9 @@ Run with:
 
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 from unittest.mock import MagicMock, call, patch
 
 import pytest

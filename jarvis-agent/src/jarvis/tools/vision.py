@@ -8,7 +8,6 @@ Combina capturas de pantalla + Accessibility API + análisis con Groq Vision.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Dict
 
 from jarvis.vision.screenshot import capture_screen, capture_active_window

@@ -9,7 +9,6 @@ Requiere: psutil
 from __future__ import annotations
 
 import platform
-import subprocess
 from datetime import datetime, timedelta
 from typing import Any, Dict
 

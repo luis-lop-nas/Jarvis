@@ -261,7 +261,12 @@ class VoiceLoop:
 
     def run_forever(self, agent_fn: AgentFn) -> None:
         """Loop principal."""
-        self.wake.start()
+        try:
+            self.wake.start()
+        except Exception as e:
+            print(f"⚠️ No se pudo iniciar wake word: {e}")
+            print("   Revisa permisos de micrófono y WAKE_WORD_DEVICE en .env")
+            return
         print("👂 Escuchando wake word...\n")
         
         try:

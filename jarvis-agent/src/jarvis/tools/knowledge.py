@@ -6,7 +6,6 @@ Herramienta para gestionar la base de conocimiento de Jarvis.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict
 
 from jarvis.knowledge.knowledge_base import KnowledgeBase

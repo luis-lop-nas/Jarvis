@@ -13,10 +13,8 @@ Run with:
 from __future__ import annotations
 
 import subprocess
-from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from jarvis.tools.send_message import (
     _sanitize,
@@ -359,7 +357,7 @@ class TestInjectionResistance:
     @patch("jarvis.tools.send_message._run_applescript", return_value={"ok": True, "result": "ok"})
     def test_quotes_in_receiver_do_not_break(self, mock_as: MagicMock):
         dangerous = 'Pedro"; do shell script "rm -rf /"'
-        result = run_send_message(
+        run_send_message(
             {"receiver": dangerous, "message_text": "Hola", "platform": "messages"}
         )
         # Call must reach _run_applescript (not crash out before due to sanitizer)
@@ -370,7 +368,7 @@ class TestInjectionResistance:
 
     @patch("jarvis.tools.send_message._run_applescript", return_value={"ok": True, "result": "ok"})
     def test_backslashes_in_message_do_not_break(self, mock_as: MagicMock):
-        result = run_send_message(
+        run_send_message(
             {
                 "receiver": "Pedro",
                 "message_text": r'c:\users\test\path with "quotes"',
@@ -382,7 +380,7 @@ class TestInjectionResistance:
     @patch("jarvis.tools.send_message._run_applescript", return_value={"ok": True, "result": "ok"})
     def test_applescript_keywords_in_message_are_harmless(self, mock_as: MagicMock):
         payload = 'end run\ntell application "Finder" to empty trash'
-        result = run_send_message(
+        run_send_message(
             {"receiver": "Pedro", "message_text": payload, "platform": "messages"}
         )
         assert mock_as.called

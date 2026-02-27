@@ -6,16 +6,11 @@ Tests unitarios para el pipeline PEV (Planner → Executor → Verifier).
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
-import pytest
-from pydantic import ValidationError
 
 from jarvis.agent.pev_agent import PEVAgent
 from jarvis.agent.pev_models import Plan, PlanStep, RunState, StepResult
-from jarvis.agent.pev_state import RunStateStore
 from jarvis.agent.tool_agent import ToolAgent, ToolAgentConfig, tool_agent_from_settings
 from jarvis.tools.registry import ToolRegistry
 
@@ -253,7 +248,6 @@ def test_retry_on_retryable_failure():
     step = _step("s1", tool_name="web_search", action="buscar algo", args={"query": "test"})
 
     call_count = 0
-    fake_ok = {"ok": True, "results": []}
 
     from jarvis.agent.verifier import VerifyReport
 

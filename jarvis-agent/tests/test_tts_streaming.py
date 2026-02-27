@@ -13,7 +13,6 @@ import time
 from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from jarvis.agent.tool_agent import _emit_sentences
 from jarvis.voice.tts import TTS, TTSConfig
@@ -46,7 +45,7 @@ class TestEmitSentences:
         first = [True]  # ya se emitió la primera
         # 3 frases cortas (< 50 chars cada par), pero juntas suman más de 50
         buf = "Ok. Si. Claro. Siguiente parte larga que supera el mínimo. Fin"
-        remainder = _emit_sentences(buf, emitted.append, first, min_chars=50)
+        _emit_sentences(buf, emitted.append, first, min_chars=50)
         # Debería haberse emitido algo
         assert len(emitted) >= 1
 
@@ -61,7 +60,7 @@ class TestEmitSentences:
         emitted: List[str] = []
         first = [False]
         buf = "Primera frase. Segunda frase. "
-        remainder = _emit_sentences(buf, emitted.append, first, min_chars=1)
+        _emit_sentences(buf, emitted.append, first, min_chars=1)
         # Ambas frases deben haberse emitido o acumulado
         assert first[0] is True
         assert len(emitted) >= 1
@@ -119,7 +118,7 @@ class TestSpeakQueuedMacos:
         spoken: List[str] = []
         _fill_queue(q, ["Primera.", "Segunda.", None])
 
-        with patch.object(tts, "_speak_macos", side_effect=lambda t: spoken.append(t) or {}) as m:
+        with patch.object(tts, "_speak_macos", side_effect=lambda t: spoken.append(t) or {}):
             tts.speak_queued(q)
 
         assert spoken == ["Primera.", "Segunda."]

@@ -31,19 +31,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_logger = logging.getLogger(__name__)
-
 import numpy as np
 import sounddevice as sd
 
 from jarvis.agent.circuit_breaker import LLMCircuitBreaker
-from jarvis.agent.tool_agent import ToolAgent, ToolAgentConfig, tool_agent_from_settings
+from jarvis.agent.tool_agent import tool_agent_from_settings
 from jarvis.memory.store import MemoryStore
-from jarvis.tools.registry import ToolRegistry, ToolSpec, build_default_registry
+from jarvis.tools.registry import ToolRegistry, build_default_registry
 from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
 from jarvis.intents.good_morning import run_morning_briefing, answer_fact_follow_up
 from jarvis.vision.camera_context import CameraContextAnalyzer, CameraContextConfig
+
+_logger = logging.getLogger(__name__)
 
 # ── Silero VAD (ONNX directo, sin torchaudio) ────────────────────────────────
 

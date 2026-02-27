@@ -14,7 +14,6 @@ from typing import List, Dict, Any, Optional
 try:
     import chromadb
     from chromadb.config import Settings
-    from sentence_transformers import SentenceTransformer
     CHROMADB_AVAILABLE = True
 except ImportError:
     CHROMADB_AVAILABLE = False
@@ -191,7 +190,7 @@ class KnowledgeBase:
                     'metadata': result['metadatas'][0]
                 }
             return None
-        except:
+        except Exception:
             return None
     
     def delete(self, doc_id: str) -> bool:
@@ -199,7 +198,7 @@ class KnowledgeBase:
         try:
             self.collection.delete(ids=[doc_id])
             return True
-        except:
+        except Exception:
             return False
     
     def list_all(self, limit: int = 100) -> List[Dict[str, Any]]:

@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
-from typing import List, Optional
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -20,7 +18,6 @@ from jarvis.voice.tts import (
     TTSConfig,
     _KokoroEngine,
     _split_long_text,
-    _KOKORO_MODEL_DIR,
 )
 
 
@@ -170,7 +167,10 @@ class TestKokoroDownload:
         mock_response.raise_for_status = MagicMock()
 
         engine = _KokoroEngine(model_dir=tmp_path)
-        with patch("requests.get", return_value=mock_response):
+        with (
+            patch("requests.get", return_value=mock_response),
+            patch.object(engine, "_MIN_SIZES", {"kokoro-v1.0.onnx": 1, "voices-v1.0.bin": 1}),
+        ):
             result = engine._download()
 
         assert result is True
@@ -216,7 +216,10 @@ class TestKokoroDownload:
             # Segunda descarga (voices.bin) — fallo
             raise requests.RequestException("red caída")
 
-        with patch("requests.get", side_effect=_get_side_effect):
+        with (
+            patch("requests.get", side_effect=_get_side_effect),
+            patch.object(engine, "_MIN_SIZES", {"kokoro-v1.0.onnx": 1, "voices-v1.0.bin": 1}),
+        ):
             result = engine._download()
 
         assert result is False
@@ -298,7 +301,7 @@ class TestTTSKokoro:
         tts = self._make_tts()
         tts._kokoro._kokoro.create.side_effect = RuntimeError("error de síntesis")
         with patch.object(tts, "_speak_macos", return_value={"command": "say"}) as mock_say:
-            result = tts.speak("Fallo.")
+            tts.speak("Fallo.")
         mock_say.assert_called_once()
 
     def test_speak_splits_long_text(self):

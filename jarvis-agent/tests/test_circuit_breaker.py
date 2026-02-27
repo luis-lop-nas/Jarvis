@@ -6,9 +6,7 @@ Tests unitarios para LLMCircuitBreaker.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
-import pytest
 
 from jarvis.agent.circuit_breaker import LLMCircuitBreaker
 

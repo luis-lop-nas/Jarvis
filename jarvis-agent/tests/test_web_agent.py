@@ -12,19 +12,14 @@ Run with:
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 
-import jarvis.tools.web_agent as _web_agent_mod
 from jarvis.tools.web_agent import (
     _is_sensitive,
     _format_elements,
     _parse_json_response,
     _detect_llm_config,
-    _extract_content,
     _execute_action,
     PlaywrightTimeout,
     run_web_agent,

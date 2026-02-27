@@ -65,6 +65,7 @@ dependencies = [
   "Pillow>=10.0.0",              # Procesamiento de imágenes (capturas de pantalla)
   "pyobjc-framework-Quartz>=10.0",  # Quartz para capturas de pantalla en macOS
   "pyobjc-framework-Cocoa>=10.0",   # AppKit para contexto de aplicaciones macOS
+  "pyobjc-framework-AVFoundation>=10.0",  # Permisos y estado de micrófono en macOS
 ]
 
 [project.optional-dependencies]

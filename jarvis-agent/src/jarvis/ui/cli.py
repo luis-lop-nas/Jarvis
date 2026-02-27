@@ -6,9 +6,7 @@ Interfaz CLI con memoria persistente.
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console

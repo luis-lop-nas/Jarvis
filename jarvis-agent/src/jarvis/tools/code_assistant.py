@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 def code_assistant(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,7 +148,7 @@ Genera el código ahora:"""
                         capture_output=True
                     )
                     result += "\n📝 Abierto en VS Code"
-                except:
+                except Exception:
                     result += "\n⚠️ No se pudo abrir VS Code automáticamente"
         
         return {

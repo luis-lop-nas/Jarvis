@@ -5,9 +5,8 @@ Tests para el módulo de detección de prompt injection.
 """
 from __future__ import annotations
 
-import pytest
 
-from jarvis.agent.prompt_guard import InjectionReport, scan_text, scan_tool_args
+from jarvis.agent.prompt_guard import scan_text, scan_tool_args
 
 
 class TestScanText:

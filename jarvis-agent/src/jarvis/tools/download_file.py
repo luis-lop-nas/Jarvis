@@ -182,7 +182,6 @@ def run_download_file(args: Dict[str, Any]) -> Dict[str, Any]:
                 counter += 1
 
         # Descargar archivo
-        total_size = int(response.headers.get('content-length', 0))
         downloaded = 0
 
         with open(file_path, 'wb') as f:

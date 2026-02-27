@@ -233,7 +233,7 @@ class TestInjectOutputPath:
 
     def test_output_stl_before_code(self):
         result = inject_output_path("result_code_here()", Path("/tmp/out.stl"))
-        lines = [l for l in result.splitlines() if l.strip()]
+        lines = [line for line in result.splitlines() if line.strip()]
         assert lines[0].startswith("OUTPUT_STL")
 
 

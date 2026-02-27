@@ -6,7 +6,7 @@ API de accesibilidad de macOS para leer contexto de apps.
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 try:
     from AppKit import NSWorkspace

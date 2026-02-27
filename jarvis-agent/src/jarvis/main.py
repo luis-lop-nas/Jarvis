@@ -7,7 +7,6 @@ Entry point del proyecto.
 from __future__ import annotations
 
 import argparse
-import logging
 from pathlib import Path
 from typing import Optional
 
@@ -161,7 +160,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.doctor_desktop:
         from jarvis.desktop.doctor import doctor_result_to_dict, run_desktop_doctor
 
-        report = doctor_result_to_dict(run_desktop_doctor())
+        report = doctor_result_to_dict(run_desktop_doctor(attempt_repair=True))
         print(f"platform: {report['platform']}")
         print(f"autostart_installed: {report['autostart_installed']}")
         print(f"autostart_loaded: {report['autostart_loaded']}")
@@ -301,8 +300,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 def _run_desktop(settings, paths) -> None:
     """Arranca Jarvis en modo escritorio: overlay NSWindow + daemon voz/LLM."""
+    try:
+        import Quartz
+        session = Quartz.CGSessionCopyCurrentDictionary()
+    except Exception:
+        session = None
+
+    if not session:
+        print("⚠️ No hay una sesión gráfica activa de macOS para iniciar el overlay desktop.")
+        print("   Inicia sesión en el escritorio (no solo terminal remota) y vuelve a ejecutar --desktop.")
+        return
+
     import signal
-    import objc
     import AppKit
 
     from jarvis.overlay.window     import JarvisWindow

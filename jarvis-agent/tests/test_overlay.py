@@ -53,7 +53,7 @@ def demo(bridge: OverlayBridge, screen_w: float, screen_h: float) -> None:
         bridge.set_state(state)
         if target:
             tx, ty = target
-            bridge.fly_to(tx, ty, callback=lambda l=label: print(f"    ✓ callback: {l}"))
+            bridge.fly_to(tx, ty, callback=lambda lbl=label: print(f"    ✓ callback: {lbl}"))
         time.sleep(2.5)
 
     bridge.set_state("idle")

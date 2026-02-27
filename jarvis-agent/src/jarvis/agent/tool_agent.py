@@ -19,8 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-_logger = logging.getLogger(__name__)
-
 import requests
 from pydantic import ValidationError
 
@@ -42,6 +40,8 @@ from jarvis.tools.schemas.base import normalize_tool_output
 from jarvis.tools.schemas.errors import build_validation_error_payload
 from jarvis.tools.shell_guard import analyze_shell_command
 from jarvis.tools.registry import ToolRegistry, build_default_registry
+
+_logger = logging.getLogger(__name__)
 
 
 Message = Dict[str, Any]
@@ -906,7 +906,7 @@ class ToolAgent:
                 err_str = str(e)
                 if "tool_use_failed" in err_str or "tool call validation failed" in err_str:
                     if self.config.debug:
-                        print(f"⚠️ Groq tool_use_failed — reintentando sin tools")
+                        print("⚠️ Groq tool_use_failed — reintentando sin tools")
                     return self._run_with_groq_simple(user_text)
                 err = f"Error Groq: {e}"
                 self.state.add_assistant(err)
