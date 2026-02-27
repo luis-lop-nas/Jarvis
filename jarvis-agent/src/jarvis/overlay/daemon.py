@@ -550,8 +550,12 @@ class JarvisDaemon:
             )
             return has_pending_confirmation or has_pending_intent
 
+        def _audio_busy() -> bool:
+            return bool(getattr(self, "_is_recording", False) or self.tts.is_speaking)
+
         if action == "interrupt":
-            self.interrupt()
+            if _audio_busy():
+                self.interrupt()
             return
         if action == "pause":
             self.pause_gesture()

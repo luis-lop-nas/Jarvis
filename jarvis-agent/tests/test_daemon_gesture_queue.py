@@ -32,8 +32,15 @@ def test_enqueue_gesture_event_puts_item_in_queue():
 
 def test_handle_gesture_event_interrupt():
     daemon = _make_daemon_stub()
+    daemon.tts.is_speaking = True
     daemon._handle_gesture_event("interrupt")
     daemon.interrupt.assert_called_once()
+
+
+def test_handle_gesture_event_interrupt_ignored_when_idle():
+    daemon = _make_daemon_stub()
+    daemon._handle_gesture_event("interrupt")
+    daemon.interrupt.assert_not_called()
 
 
 def test_handle_gesture_event_pause_resume_voice():
