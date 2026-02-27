@@ -60,6 +60,7 @@ class OpenWakeWordListener:
         self._hit_streak: int = 0
         self._last_trigger_ts: float = 0.0
         self._debug_tick: int = 0
+        self._latest_rms: float = 0.0   # RMS del último chunk procesado (thread-safe por GIL)
         # Ring buffer pre-wake: guarda audio continuo antes de la detección
         _cap = max(1, cfg.oww_pre_buffer_ms * self.SAMPLE_RATE // (1000 * self.CHUNK_SAMPLES))
         self._pre_buffer: collections.deque = collections.deque(maxlen=_cap)
@@ -167,6 +168,11 @@ class OpenWakeWordListener:
         )
         self._stream.start()
 
+    @property
+    def latest_rms(self) -> float:
+        """RMS (int16) del último chunk de audio procesado. Thread-safe por GIL."""
+        return self._latest_rms
+
     def get_prebuffer(self) -> list:
         """
         Vuelca y limpia el ring buffer de audio pre-wake.
@@ -209,6 +215,7 @@ class OpenWakeWordListener:
 
             audio_flat = audio_chunk.flatten()
             rms = float(np.sqrt(np.mean(audio_flat.astype(np.float32) ** 2)))
+            self._latest_rms = rms   # expuesto para gaze trigger
             prediction = self._model.predict(audio_flat)
 
             for score in prediction.values():
@@ -313,6 +320,11 @@ class WakeWordListener:
 
     def wait_for_wake(self, *, timeout_sec: Optional[float] = None) -> bool:
         return self._impl.wait_for_wake(timeout_sec=timeout_sec)
+
+    @property
+    def latest_rms(self) -> float:
+        """RMS del último chunk procesado. 0.0 si el impl no lo soporta (Porcupine)."""
+        return getattr(self._impl, "latest_rms", 0.0)
 
     def get_prebuffer(self) -> list:
         """Delega al impl si soporta pre-buffer (OpenWakeWord). Porcupine retorna []."""

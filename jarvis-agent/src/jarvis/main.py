@@ -364,6 +364,16 @@ def _run_desktop(settings, paths) -> None:
     # Conectar panel al menú de la barra de menú
     _menubar.set_main_panel(_main_panel)
 
+    # ── Annotation overlay (opcional — solo si está habilitado en config) ────
+    _ann_overlay = None
+    if getattr(settings, "annotation_overlay_enabled", True):
+        try:
+            from jarvis.overlay import annotation as _ann_mod
+            _ann_overlay = _ann_mod.AnnotationOverlay()
+            _ann_mod.set_instance(_ann_overlay)
+        except Exception as _e:
+            print(f"⚠️ Annotation overlay no disponible: {_e}")
+
     # ── Gesture controller (opcional) ─────────────────────────────────────────
     _gesture_ctrl = None
     if getattr(settings, "use_gestures", False):

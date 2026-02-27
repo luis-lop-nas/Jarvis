@@ -15,6 +15,7 @@ import logging
 import queue as queue_module
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
@@ -618,10 +619,24 @@ class ToolAgent:
 
     def _run_with_claude(self, user_text: str) -> str:
         """Claude como cerebro único: conversación + tools nativo."""
+        import hashlib
+        import json as _json
+
         messages = self._build_claude_messages()
         tools = self._cached_claude_tools
 
+        _loop_start = time.monotonic()
+        _MAX_LOOP_SECONDS = 60.0
+        _last_tool_sig: Optional[str] = None
+
         for loop_count in range(self.config.max_tool_loops):
+            # Timeout global del bucle
+            if time.monotonic() - _loop_start > _MAX_LOOP_SECONDS:
+                text = "Tiempo máximo de procesamiento alcanzado."
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
+
             try:
                 response = self.claude_client.messages.create(
                     model=self.config.claude_model,
@@ -705,6 +720,20 @@ class ToolAgent:
                             "tool_use_id": block.id,
                             "content": json.dumps(tool_out, ensure_ascii=False),
                         })
+
+                # Detección de loop: mismos tools con mismos args dos veces seguidas
+                _cur_sig = hashlib.md5(
+                    _json.dumps(
+                        [(b.name, b.input) for b in response.content if b.type == "tool_use"],
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                if _cur_sig == _last_tool_sig:
+                    text = "Ciclo detectado: el agente usó las mismas herramientas dos veces seguidas."
+                    self.state.add_assistant(text)
+                    self._save_message("assistant", text)
+                    return text
+                _last_tool_sig = _cur_sig
 
                 # Devolver resultados a Claude
                 messages.append({"role": "user", "content": tool_results})

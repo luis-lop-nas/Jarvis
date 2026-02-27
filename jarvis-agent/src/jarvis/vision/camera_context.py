@@ -52,6 +52,9 @@ class CameraContextAnalyzer:
         analyzer.stop()
     """
 
+    # Intervalo rápido para detección de cara (no gasta cuota Groq)
+    _FACE_INTERVAL: float = 0.3
+
     def __init__(self, cfg: CameraContextConfig) -> None:
         self.cfg = cfg
         self._thread: Optional[threading.Thread] = None
@@ -63,6 +66,7 @@ class CameraContextAnalyzer:
         self._looking_at_camera: bool = False
         self._object_context: str = ""
         self._last_analysis: float = 0.0
+        self._last_face_check: float = 0.0
 
         # MediaPipe (inicializado lazy en el hilo)
         self._mp_face = None
@@ -138,16 +142,29 @@ class CameraContextAnalyzer:
             while not self._stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
-                    time.sleep(0.1)
-                    continue
-
-                now = time.monotonic()
-                if (now - self._last_analysis) < self.cfg.interval_s:
                     time.sleep(0.05)
                     continue
 
-                self._last_analysis = now
-                self._analyze_frame(frame)
+                now = time.monotonic()
+
+                # ── Análisis completo lento (cara + objetos Groq Vision) ──────
+                if (now - self._last_analysis) >= self.cfg.interval_s:
+                    self._last_analysis = now
+                    self._last_face_check = now
+                    self._analyze_frame(frame)
+
+                # ── Detección de cara rápida (solo MediaPipe, sin Groq) ───────
+                elif (now - self._last_face_check) >= self._FACE_INTERVAL:
+                    self._last_face_check = now
+                    present, looking = self._detect_face(frame)
+                    with self._lock:
+                        self._user_present = present
+                        self._looking_at_camera = looking
+                        if not present:
+                            self._object_context = ""
+
+                else:
+                    time.sleep(0.02)
 
         finally:
             cap.release()

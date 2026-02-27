@@ -6,13 +6,16 @@ Configuración centralizada del proyecto.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -75,12 +78,12 @@ class Settings(BaseSettings):
     wake_word: str = Field(default="jarvis", alias="WAKE_WORD")
 
     # --- STT ---
-    stt_engine: str = Field(default="groq", alias="STT_ENGINE")  # groq | local
+    stt_engine: Literal["groq", "local"] = Field(default="groq", alias="STT_ENGINE")
     stt_groq_model: str = Field(default="whisper-large-v3-turbo", alias="STT_GROQ_MODEL")
     stt_whisper_model: str = Field(default="small", alias="STT_WHISPER_MODEL")
 
     # --- TTS (engine principal) ---
-    tts_engine: str = Field(default="kokoro", alias="TTS_ENGINE")  # kokoro, piper, macos
+    tts_engine: Literal["kokoro", "piper", "macos", "elevenlabs"] = Field(default="kokoro", alias="TTS_ENGINE")
 
     # --- Kokoro TTS (local, Apple Silicon) ---
     kokoro_voice: str = Field(default="ef_dora", alias="KOKORO_VOICE")
@@ -94,7 +97,7 @@ class Settings(BaseSettings):
     gesture_camera_index: int = Field(default=0, alias="GESTURE_CAMERA_INDEX")
 
     # --- VAD avanzado (Silero + pre-buffer + adaptive noise) ---
-    vad_engine: str        = Field(default="silero", alias="VAD_ENGINE")           # "silero" | "rms"
+    vad_engine: Literal["silero", "rms"] = Field(default="silero", alias="VAD_ENGINE")
     vad_silence_ms: int    = Field(default=480,       alias="VAD_SILENCE_MS")      # ms de silencio para cortar
     vad_pre_buffer_ms: int = Field(default=1500,      alias="VAD_PRE_BUFFER_MS")   # ms de ring buffer pre-wake
     wake_beep: bool        = Field(default=True,      alias="WAKE_BEEP")           # beep al detectar wake word
@@ -104,6 +107,28 @@ class Settings(BaseSettings):
     camera_context_index: int     = Field(default=0,     alias="CAMERA_CONTEXT_INDEX")
     camera_context_interval_s: float = Field(default=5.0, alias="CAMERA_CONTEXT_INTERVAL")
     camera_context_face_only: bool   = Field(default=False, alias="CAMERA_CONTEXT_FACE_ONLY")
+
+    # --- Gaze trigger (activar escucha cuando el usuario mira la cámara y habla) ---
+    gaze_trigger_enabled: bool  = Field(default=False, alias="GAZE_TRIGGER_ENABLED")
+    gaze_trigger_rms_threshold: float = Field(default=400.0, alias="GAZE_TRIGGER_RMS_THRESHOLD")
+    gaze_trigger_cooldown: float      = Field(default=3.0,   alias="GAZE_TRIGGER_COOLDOWN")
+
+    # --- Screen context (análisis periódico de pantalla) ---
+    screen_context_enabled: bool     = Field(default=False, alias="SCREEN_CONTEXT")
+    screen_context_interval_s: float = Field(default=30.0,  alias="SCREEN_CONTEXT_INTERVAL")
+    screen_context_focus_only: bool  = Field(default=True,  alias="SCREEN_CONTEXT_FOCUS_ONLY")
+
+    # --- Annotation overlay ---
+    annotation_overlay_enabled: bool = Field(default=True, alias="ANNOTATION_OVERLAY")
+
+    # --- Meeting mode ---
+    meeting_mode_enabled: bool       = Field(default=False, alias="MEETING_MODE")
+    meeting_mode_apps: List[str]     = Field(
+        default_factory=lambda: [
+            "zoom", "microsoft teams", "google meet", "facetime", "webex", "discord"
+        ],
+        alias="MEETING_MODE_APPS",
+    )
 
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
@@ -128,7 +153,7 @@ class Settings(BaseSettings):
 
     # --- Shell guard ---
     shell_guard_enabled: bool = Field(default=True, alias="SHELL_GUARD_ENABLED")
-    shell_guard_mode: str = Field(default="strict", alias="SHELL_GUARD_MODE")
+    shell_guard_mode: Literal["strict", "permissive", "custom"] = Field(default="strict", alias="SHELL_GUARD_MODE")
     shell_deny_patterns: List[str] = Field(default_factory=list, alias="SHELL_DENY_PATTERNS")
     shell_confirm_patterns: List[str] = Field(default_factory=list, alias="SHELL_CONFIRM_PATTERNS")
 
@@ -150,6 +175,54 @@ class Settings(BaseSettings):
     pev_retry_max: int = Field(default=1, alias="PEV_RETRY_MAX")
     pev_state_ttl_seconds: int = Field(default=600, alias="PEV_STATE_TTL_SECONDS")
     pev_verbose_trace: bool = Field(default=False, alias="PEV_VERBOSE_TRACE")
+
+    # ── Validadores de rango ───────────────────────────────────────────────────
+
+    @field_validator("wake_word_sensitivity", mode="before")
+    @classmethod
+    def clamp_sensitivity(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    @field_validator("kokoro_speed", mode="before")
+    @classmethod
+    def clamp_kokoro_speed(cls, v: float) -> float:
+        return max(0.5, min(2.0, float(v)))
+
+    @field_validator("gesture_cooldown", mode="before")
+    @classmethod
+    def clamp_gesture_cooldown(cls, v: float) -> float:
+        return max(0.1, min(30.0, float(v)))
+
+    @field_validator("vad_silence_ms", mode="before")
+    @classmethod
+    def clamp_vad_silence_ms(cls, v: int) -> int:
+        return max(50, min(3000, int(v)))
+
+    @field_validator("camera_context_interval_s", mode="before")
+    @classmethod
+    def clamp_camera_context_interval(cls, v: float) -> float:
+        return max(0.5, min(60.0, float(v)))
+
+    @field_validator("screen_context_interval_s", mode="before")
+    @classmethod
+    def clamp_screen_context_interval(cls, v: float) -> float:
+        return max(5.0, min(300.0, float(v)))
+
+    # ── Validador cross-field ─────────────────────────────────────────────────
+
+    @model_validator(mode="after")
+    def check_api_keys(self) -> "Settings":
+        if self.use_claude and not self.anthropic_api_key:
+            _logger.warning(
+                "USE_CLAUDE=true pero ANTHROPIC_API_KEY está vacía. "
+                "El backend Claude no funcionará."
+            )
+        if self.use_groq and not self.groq_api_key:
+            _logger.warning(
+                "USE_GROQ=true pero GROQ_API_KEY está vacía. "
+                "El backend Groq no funcionará."
+            )
+        return self
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 

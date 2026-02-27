@@ -24,6 +24,7 @@ class STTConfig:
     channels: int = 1
     dtype: str = "int16"
     device: Optional[int] = None
+    language: str = "es"                        # idioma para transcripción
     # Groq
     groq_api_key: str = ""
     groq_model: str = "whisper-large-v3-turbo"
@@ -126,11 +127,11 @@ class STT:
                 result = self._groq_client.audio.transcriptions.create(
                     file=(wav_path.name, f.read()),
                     model=self.cfg.groq_model,
-                    language="es",
+                    language=self.cfg.language,
                     response_format="text",
                 )
             text = (result or "").strip()
-            if not text or len(text) < 2:
+            if not text:
                 return "No he detectado voz clara, intenta de nuevo"
             print(f"✓ Transcripción: '{text}'")
             return text
@@ -146,14 +147,14 @@ class STT:
             print("🎯 Transcribiendo con Whisper local...")
             result = self._whisper_model.transcribe(
                 str(wav_path),
-                language="es",
+                language=self.cfg.language,
                 fp16=False,
                 initial_prompt="Este es Jarvis, un asistente virtual en español.",
                 temperature=0.0,
                 beam_size=5,
             )
             text = result.get("text", "").strip()
-            if not text or len(text) < 3:
+            if not text:
                 return "No he detectado voz clara, intenta de nuevo"
             print(f"✓ Transcripción: '{text}'")
             return text

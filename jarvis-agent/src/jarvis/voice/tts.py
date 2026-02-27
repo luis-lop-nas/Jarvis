@@ -79,6 +79,7 @@ class _KokoroEngine:
         self._model_dir: Path = model_dir or _KOKORO_MODEL_DIR
         self._kokoro: Optional[object] = None
         self.loaded: bool = False
+        self._warmup_ok: bool = False
 
     # ── Carga ──────────────────────────────────────────────────────────────
 
@@ -143,6 +144,8 @@ class _KokoroEngine:
             (_KOKORO_VOICES_URL, "voices-v1.0.bin"),
         ]
 
+        _MAX_RETRIES = 3
+
         for url, filename in files:
             dest = self._model_dir / filename
             if dest.exists():
@@ -154,49 +157,64 @@ class _KokoroEngine:
             _logger.info(
                 "[Kokoro] Descargando %s (puede tardar unos minutos)...", filename
             )
-            try:
-                resp = requests.get(url, stream=True, timeout=300)
-                resp.raise_for_status()
-                total = int(resp.headers.get("content-length", 0))
-                total_mb = total / (1024 * 1024) if total else 0
-                downloaded = 0
-                last_logged_pct = -1
 
-                with open(tmp, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        fh.write(chunk)
-                        downloaded += len(chunk)
-                        if total:
-                            pct = downloaded * 100 // total
-                            if pct // 10 != last_logged_pct // 10:
-                                last_logged_pct = pct
-                                dl_mb = downloaded / (1024 * 1024)
-                                _logger.info(
-                                    "[Kokoro] Descargando %s... %.0f MB / %.0f MB (%d%%)",
-                                    filename, dl_mb, total_mb, pct,
-                                )
+            success = False
+            for attempt in range(_MAX_RETRIES):
+                try:
+                    resp = requests.get(url, stream=True, timeout=300)
+                    resp.raise_for_status()
+                    total = int(resp.headers.get("content-length", 0))
+                    total_mb = total / (1024 * 1024) if total else 0
+                    downloaded = 0
+                    last_logged_pct = -1
 
-                # Verificar tamaño mínimo antes de mover al destino final
-                actual_size = tmp.stat().st_size
-                min_size = self._MIN_SIZES.get(filename, 0)
-                if actual_size < min_size:
-                    tmp.unlink(missing_ok=True)
-                    raise RuntimeError(
-                        f"Descarga incompleta: {filename} tiene {actual_size / 1024 / 1024:.1f} MB "
-                        f"pero se esperan al menos {min_size / 1024 / 1024:.0f} MB. "
-                        "Puede que la descarga se haya interrumpido."
+                    with open(tmp, "wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                            fh.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = downloaded * 100 // total
+                                if pct // 10 != last_logged_pct // 10:
+                                    last_logged_pct = pct
+                                    dl_mb = downloaded / (1024 * 1024)
+                                    _logger.info(
+                                        "[Kokoro] Descargando %s... %.0f MB / %.0f MB (%d%%)",
+                                        filename, dl_mb, total_mb, pct,
+                                    )
+
+                    # Verificar tamaño mínimo antes de mover al destino final
+                    actual_size = tmp.stat().st_size
+                    min_size = self._MIN_SIZES.get(filename, 0)
+                    if actual_size < min_size:
+                        tmp.unlink(missing_ok=True)
+                        raise RuntimeError(
+                            f"Descarga incompleta: {filename} tiene {actual_size / 1024 / 1024:.1f} MB "
+                            f"pero se esperan al menos {min_size / 1024 / 1024:.0f} MB. "
+                            "Puede que la descarga se haya interrumpido."
+                        )
+
+                    # Mover al destino final solo cuando la descarga está 100% completa
+                    tmp.rename(dest)
+                    _logger.info(
+                        "[Kokoro] Descarga completada: %s (%.0f MB)",
+                        filename, actual_size / (1024 * 1024),
                     )
+                    success = True
+                    break  # éxito
 
-                # Mover al destino final solo cuando la descarga está 100% completa
-                tmp.rename(dest)
-                _logger.info(
-                    "[Kokoro] Descarga completada: %s (%.0f MB)",
-                    filename, actual_size / (1024 * 1024),
-                )
+                except Exception as exc:
+                    tmp.unlink(missing_ok=True)
+                    if attempt < _MAX_RETRIES - 1:
+                        wait = 2 ** attempt  # 1s, 2s, 4s
+                        _logger.warning(
+                            "[Kokoro] Error descargando %s: %s — reintentando en %ds...",
+                            filename, exc, wait,
+                        )
+                        time.sleep(wait)
+                    else:
+                        _logger.error("[Kokoro] Error descargando %s: %s", filename, exc)
 
-            except Exception as exc:
-                tmp.unlink(missing_ok=True)
-                _logger.error("[Kokoro] Error descargando %s: %s", filename, exc)
+            if not success:
                 return False
 
         return True
@@ -207,6 +225,7 @@ class _KokoroEngine:
         """Pre-JIT del modelo con texto silencioso para reducir latencia del primer uso."""
         try:
             self._kokoro.create("hola", voice=voice, speed=speed, lang=lang)  # type: ignore[union-attr]
+            self._warmup_ok = True
             _logger.debug("[Kokoro] Warmup completado.")
         except Exception as exc:
             _logger.warning("[Kokoro] Warmup falló (no crítico): %s", exc)
@@ -332,7 +351,18 @@ class TTS:
 
             try:
                 sd.play(samples, sr)
-                sd.wait()  # bloqueante; sd.stop() desde otro hilo retorna aquí
+                # Polling interruptible en lugar de sd.wait() bloqueante
+                chunk_duration = len(samples) / sr
+                deadline = time.monotonic() + chunk_duration + 1.0
+                while time.monotonic() < deadline:
+                    if self._stop_event.wait(timeout=0.05):
+                        sd.stop()
+                        break
+                    try:
+                        if not sd.get_stream().active:
+                            break
+                    except Exception:
+                        break
             except Exception as exc:
                 _logger.warning("[Kokoro] Error reproduciendo audio: %s", exc)
 

@@ -90,6 +90,7 @@ def build_default_registry() -> ToolRegistry:
         weather,
         cad_generator,
         routines,
+        annotate_screen,
     )
 
     registry = ToolRegistry()
@@ -441,6 +442,27 @@ def build_default_registry() -> ToolRegistry:
                 "item": "Rutina a añadir o eliminar (para add/remove)",
                 "items": "Lista completa de rutinas para set_day",
                 "daily": "Si true, opera sobre rutinas diarias (todos los días)",
+            },
+        )
+    )
+
+    # 21. Annotate Screen
+    registry.register(
+        ToolSpec(
+            name="annotate_screen",
+            description=(
+                "Dibuja anotaciones visuales sobre la pantalla (flechas, círculos, rectángulos, texto). "
+                "Solo disponible en modo desktop. Útil para señalar elementos en pantalla. "
+                "Coordenadas normalizadas [0,1] desde la esquina superior-izquierda."
+            ),
+            fn=annotate_screen.annotate_screen,
+            schema={
+                "annotations": (
+                    "Lista de anotaciones (obligatorio). Cada elemento: "
+                    "{type: circle|arrow|rect|text, x, y, x2, y2, radius, label, color, thickness}"
+                ),
+                "duration_s": "Segundos de visibilidad (default 10)",
+                "clear_previous": "Limpiar anotaciones anteriores primero (bool, default false)",
             },
         )
     )

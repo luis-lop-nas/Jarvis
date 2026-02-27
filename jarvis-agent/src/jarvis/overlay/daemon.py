@@ -41,6 +41,7 @@ from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
 from jarvis.intents.good_morning import run_morning_briefing, answer_fact_follow_up
 from jarvis.vision.camera_context import CameraContextAnalyzer, CameraContextConfig
+from jarvis.vision.screen_context import ScreenContextAnalyzer, ScreenContextConfig
 
 # ── Silero VAD (ONNX directo, sin torchaudio) ────────────────────────────────
 
@@ -299,6 +300,9 @@ class JarvisDaemon:
     # Conversación continua: espera máxima por voz de seguimiento
     _FOLLOWUP_TIMEOUT_S = 6.0
 
+    # Gaze trigger: activar escucha cuando el usuario mira la cámara y habla
+    _GAZE_VOICE_CHUNKS = 2   # chunks consecutivos con voz antes de disparar (~0.3s)
+
     # VU meter: 3000 RMS ≈ voz normal conversacional
     _VU_NORM = 3000.0
 
@@ -383,17 +387,58 @@ class JarvisDaemon:
         self._noise_floor: float = JarvisDaemon._NF_INIT
         self._noise_floor_lock = threading.Lock()
 
+        # ── Gaze trigger
+        self._gaze_trigger_enabled: bool = bool(
+            getattr(settings, "gaze_trigger_enabled", False)
+        )
+        self._gaze_rms_threshold: float = float(
+            getattr(settings, "gaze_trigger_rms_threshold", 400.0)
+        )
+        self._gaze_cooldown: float = float(
+            getattr(settings, "gaze_trigger_cooldown", 3.0)
+        )
+
         # ── Camera context (face detection + object analysis via Groq Vision)
+        # Se activa si camera_context_enabled=true O si gaze_trigger_enabled=true
         self._camera_ctx: Optional[CameraContextAnalyzer] = None
-        if getattr(settings, "camera_context_enabled", False):
+        _need_camera = (
+            getattr(settings, "camera_context_enabled", False)
+            or self._gaze_trigger_enabled
+        )
+        if _need_camera:
             _cam_cfg = CameraContextConfig(
                 enabled=True,
                 camera_index=getattr(settings, "camera_context_index", 0),
                 interval_s=getattr(settings, "camera_context_interval_s", 5.0),
-                face_only=getattr(settings, "camera_context_face_only", False),
+                # gaze trigger solo necesita cara, no objetos (a menos que camera_context también esté activo)
+                face_only=(
+                    getattr(settings, "camera_context_face_only", False)
+                    or (self._gaze_trigger_enabled and not getattr(settings, "camera_context_enabled", False))
+                ),
                 groq_api_key=getattr(settings, "groq_api_key", ""),
             )
             self._camera_ctx = CameraContextAnalyzer(_cam_cfg)
+
+        # ── Screen context (análisis periódico de pantalla)
+        self._screen_ctx: Optional[ScreenContextAnalyzer] = None
+        if getattr(settings, "screen_context_enabled", False):
+            _sc_cfg = ScreenContextConfig(
+                enabled=True,
+                interval_s=getattr(settings, "screen_context_interval_s", 30.0),
+                groq_api_key=getattr(settings, "groq_api_key", ""),
+                focus_changes_only=getattr(settings, "screen_context_focus_only", True),
+            )
+            self._screen_ctx = ScreenContextAnalyzer(_sc_cfg)
+
+        # ── Meeting mode (silencia TTS cuando hay app de videollamada activa)
+        self._meeting_mode_enabled: bool = bool(
+            getattr(settings, "meeting_mode_enabled", False)
+        )
+        self._meeting_mode_apps: list[str] = list(
+            getattr(settings, "meeting_mode_apps",
+                    ["zoom", "microsoft teams", "google meet", "facetime", "webex", "discord"])
+        )
+        self._in_meeting_mode: bool = False
 
     # ── Arranque / parada ─────────────────────────────────────────────────────
 
@@ -455,6 +500,20 @@ class JarvisDaemon:
         self._running = True
         if self._camera_ctx:
             self._camera_ctx.start()
+        if self._screen_ctx:
+            self._screen_ctx.start()
+        if self._meeting_mode_enabled:
+            threading.Thread(
+                target=self._meeting_mode_loop,
+                name="jarvis-meeting",
+                daemon=True,
+            ).start()
+        if self._gaze_trigger_enabled:
+            threading.Thread(
+                target=self._gaze_voice_loop,
+                name="jarvis-gaze",
+                daemon=True,
+            ).start()
         self._main_thread = threading.Thread(
             target=self._run, name="jarvis-daemon", daemon=True
         )
@@ -468,6 +527,8 @@ class JarvisDaemon:
         self._clipboard.stop()
         if self._camera_ctx:
             self._camera_ctx.stop()
+        if self._screen_ctx:
+            self._screen_ctx.stop()
         self._hud.hide()
         if self._wake_listener is not None:
             try:
@@ -518,6 +579,8 @@ class JarvisDaemon:
                 self._handle_gesture_event(source[1])
             elif source == "hotkey":
                 self._handle_hotkey_request()
+            elif source == "gaze_trigger":
+                self._handle_request(source_label="gaze")
             else:
                 self._handle_request()
 
@@ -525,7 +588,8 @@ class JarvisDaemon:
         """Gestiona acciones de gesto encoladas desde GestureController."""
         action = (action or "").strip().lower()
         if action == "interrupt":
-            self.interrupt()
+            if self._is_recording or self.tts.is_speaking:
+                self.interrupt()
             return
         if action == "pause":
             self.pause_gesture()
@@ -536,14 +600,21 @@ class JarvisDaemon:
         if action == "voice":
             self.trigger_voice_input()
             return
+        _has_pending = (
+            self.agent.has_pending_confirmation()
+            or self.agent.intent_tracker.is_pending()
+        )
         if action == "confirm":
-            self.submit_text("sí, confirmo")
+            if _has_pending:
+                self.submit_text("sí, confirmo")
             return
         if action == "yes":
-            self.submit_text("sí")
+            if _has_pending:
+                self.submit_text("sí")
             return
         if action == "no":
-            self.submit_text("no, cancela")
+            if _has_pending:
+                self.submit_text("no, cancela")
             return
 
         print(f"⚠️ Acción de gesto desconocida: {action}")
@@ -605,6 +676,63 @@ class JarvisDaemon:
                     print(f"⚠️ Wake word loop error: {e}")
                 time.sleep(0.5)
 
+    def _gaze_voice_loop(self) -> None:
+        """
+        Thread daemon: activa Jarvis automáticamente cuando el usuario mira la cámara
+        y empieza a hablar, sin necesitar decir el wake word.
+
+        Lógica:
+          1. Verifica que `_camera_ctx.looking_at_camera` sea True (cara frontal detectada)
+          2. Lee el RMS del último chunk procesado por el wake word listener (sin nuevo stream)
+          3. Si el RMS supera el umbral durante _GAZE_VOICE_CHUNKS consecutivos → dispara
+          4. Cooldown independiente para evitar re-activaciones rápidas
+        """
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        consecutive_voice = 0
+        last_trigger_ts = 0.0
+
+        _log.info("Gaze trigger activo (umbral RMS=%.0f, cooldown=%.1fs)",
+                  self._gaze_rms_threshold, self._gaze_cooldown)
+
+        while self._running:
+            time.sleep(0.15)
+
+            # No interferir con grabación activa ni pausa por gesto
+            if self._is_recording or self._gesture_paused:
+                consecutive_voice = 0
+                continue
+
+            # Cooldown entre activaciones
+            if time.monotonic() - last_trigger_ts < self._gaze_cooldown:
+                continue
+
+            # ── Condición 1: usuario mirando la cámara ────────────────────────
+            if not (self._camera_ctx and self._camera_ctx.looking_at_camera):
+                consecutive_voice = 0
+                continue
+
+            # ── Condición 2: hay voz en el micrófono ─────────────────────────
+            # Reutilizamos el RMS que ya computa el wake word listener (sin nuevo stream)
+            if self._wake_listener is None:
+                consecutive_voice = 0
+                continue
+
+            rms = self._wake_listener.latest_rms
+            if rms >= self._gaze_rms_threshold:
+                consecutive_voice += 1
+                if consecutive_voice >= self._GAZE_VOICE_CHUNKS:
+                    consecutive_voice = 0
+                    last_trigger_ts = time.monotonic()
+                    _log.info("👁 Gaze trigger: cara detectada + RMS=%.0f — activando", rms)
+                    print(f"👁️ Gaze trigger — mirando a cámara y hablando (RMS={rms:.0f})")
+                    self._play_wake_beep()
+                    self._interrupt_event.set()
+                    self._trigger_queue.put("gaze_trigger")
+            else:
+                consecutive_voice = 0
+
     # ── Grabación con VAD + VU meter ─────────────────────────────────────────
 
     def _record_with_vad(
@@ -617,6 +745,8 @@ class JarvisDaemon:
         Puerta de entrada: despacha a Silero VAD o RMS según disponibilidad.
         prebuffer: lista de np.ndarray int16 del ring buffer pre-wake.
         """
+        if wait_timeout_s is not None:
+            wait_timeout_s = max(0.5, min(wait_timeout_s, 60.0))
         silero = self._get_silero()
         if silero is not None:
             return self._record_with_vad_silero(
@@ -793,7 +923,16 @@ class JarvisDaemon:
 
                     # ── Silero VAD ────────────────────────────────────────
                     audio_f = flat.astype(np.float32) / 32768.0
-                    prob    = silero(audio_f, sr)
+                    try:
+                        prob = silero(audio_f, sr)
+                    except Exception as _vad_exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "VAD Silero error: %s — reset estado", _vad_exc
+                        )
+                        silero.reset_states()
+                        # Fallback RMS para este chunk
+                        prob = 1.0 if rms > noise_floor * 2.5 else 0.0
 
                     if prob >= self._SILERO_VOICE:
                         if not voice_started:
@@ -883,12 +1022,20 @@ class JarvisDaemon:
             if cam_snippet:
                 parts.append(cam_snippet)
 
+        # Screen context (descripción de la pantalla activa)
+        if self._screen_ctx:
+            sc_snippet = self._screen_ctx.get_context_snippet()
+            if sc_snippet:
+                parts.append(sc_snippet)
+
         return " | ".join(parts)
 
     # ── Handlers de petición ─────────────────────────────────────────────────
 
-    def _handle_request(self) -> None:
+    def _handle_request(self, source_label: str = "wake") -> None:
         """Un ciclo completo: graba → transcribe → LLM → TTS + HUD."""
+        if source_label == "gaze":
+            print("👁️ Escuchando (activado por mirada + voz)")
         self._hud.hide()
         try:
             self.bridge.set_state("listening")
@@ -1038,12 +1185,15 @@ class JarvisDaemon:
                     return
 
                 if not self._interrupt_event.is_set():
-                    self.tts.speak_nonblocking(speech_text)
-                    while self.tts.is_speaking:
-                        if self._interrupt_event.is_set():
-                            self.tts.stop()
-                            break
-                        time.sleep(0.05)
+                    if self._in_meeting_mode:
+                        print("🎙 Modo reunión: TTS omitido (briefing)")
+                    else:
+                        self.tts.speak_nonblocking(speech_text)
+                        while self.tts.is_speaking:
+                            if self._interrupt_event.is_set():
+                                self.tts.stop()
+                                break
+                            time.sleep(0.05)
 
                 return
 
@@ -1071,12 +1221,15 @@ class JarvisDaemon:
                     return
 
                 if not self._interrupt_event.is_set():
-                    self.tts.speak_nonblocking(speech_text)
-                    while self.tts.is_speaking:
-                        if self._interrupt_event.is_set():
-                            self.tts.stop()
-                            break
-                        time.sleep(0.05)
+                    if self._in_meeting_mode:
+                        print("🎙 Modo reunión: TTS omitido (fact reply)")
+                    else:
+                        self.tts.speak_nonblocking(speech_text)
+                        while self.tts.is_speaking:
+                            if self._interrupt_event.is_set():
+                                self.tts.stop()
+                                break
+                            time.sleep(0.05)
 
                 return
 
@@ -1124,12 +1277,15 @@ class JarvisDaemon:
 
             # ── Hablar respuesta completa de una vez → sin pausas entre frases
             if not self._interrupt_event.is_set():
-                self.tts.speak_nonblocking(speech_text)
-                while self.tts.is_speaking:
-                    if self._interrupt_event.is_set():
-                        self.tts.stop()
-                        break
-                    time.sleep(0.05)
+                if self._in_meeting_mode:
+                    print("🎙 Modo reunión: TTS omitido")
+                else:
+                    self.tts.speak_nonblocking(speech_text)
+                    while self.tts.is_speaking:
+                        if self._interrupt_event.is_set():
+                            self.tts.stop()
+                            break
+                        time.sleep(0.05)
 
         except Exception as e:
             print(f"⚠️ Error procesando texto: {e}")
@@ -1146,6 +1302,32 @@ class JarvisDaemon:
         # Ventana de seguimiento (fuera del finally para no bloquear el idle)
         if _allow_followup and not self._interrupt_event.is_set():
             self._try_followup()
+
+    # ── Meeting mode ──────────────────────────────────────────────────────────
+
+    def _meeting_mode_loop(self) -> None:
+        """Detecta apps de videollamada → silencia TTS automáticamente."""
+        import logging as _log
+        _ml = _log.getLogger(__name__)
+        while self._running:
+            try:
+                from jarvis.vision.accessibility import get_active_app
+                app = get_active_app()
+                app_name = (app.get("name") or "").lower()
+
+                is_meeting = any(m in app_name for m in self._meeting_mode_apps)
+
+                if is_meeting != self._in_meeting_mode:
+                    self._in_meeting_mode = is_meeting
+                    if is_meeting:
+                        _ml.info("Modo reunión ACTIVO: %s", app.get("name"))
+                        self._hud.show_text("🎙 Modo reunión: TTS silenciado")
+                    else:
+                        _ml.info("Modo reunión DESACTIVADO")
+                        self._hud.show_text("🔊 Modo reunión: TTS restaurado")
+            except Exception:
+                pass
+            time.sleep(5.0)
 
     # ── Accesibilidad ─────────────────────────────────────────────────────────
 
