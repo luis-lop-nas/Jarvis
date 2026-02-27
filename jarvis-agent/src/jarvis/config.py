@@ -79,11 +79,16 @@ class Settings(BaseSettings):
     stt_groq_model: str = Field(default="whisper-large-v3-turbo", alias="STT_GROQ_MODEL")
     stt_whisper_model: str = Field(default="small", alias="STT_WHISPER_MODEL")
 
-    # --- ElevenLabs TTS ---
+    # --- TTS (engine principal + ElevenLabs) ---
+    tts_engine: str = Field(default="kokoro", alias="TTS_ENGINE")  # kokoro, elevenlabs, piper, macos
     elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
     elevenlabs_voice_id: str = Field(default="", alias="ELEVENLABS_VOICE_ID")
     elevenlabs_model: str = Field(default="eleven_multilingual_v2", alias="ELEVENLABS_MODEL")
-    tts_engine: str = Field(default="elevenlabs", alias="TTS_ENGINE")  # elevenlabs, piper, macos
+
+    # --- Kokoro TTS (local, Apple Silicon) ---
+    kokoro_voice: str = Field(default="ef_dora", alias="KOKORO_VOICE")
+    kokoro_speed: float = Field(default=1.0, alias="KOKORO_SPEED")
+    kokoro_language: str = Field(default="es", alias="KOKORO_LANGUAGE")
 
     # --- Gesture control ---
     use_gestures: bool = Field(default=False, alias="USE_GESTURES")

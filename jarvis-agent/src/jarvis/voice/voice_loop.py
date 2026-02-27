@@ -144,6 +144,68 @@ class VoiceLoop:
             print(f"⚠️ Error VAD: {e}")
             return None
 
+    def _detect_speech_rms(self, timeout: float = 6.0) -> Optional[np.ndarray]:
+        """
+        Fallback sin Silero: espera voz y corta cuando detecta silencio sostenido.
+        """
+        sample_rate = 16000
+        chunk_samples = 512
+        silence_chunks = 0
+        max_silence_chunks = 25  # ~0.8s
+        speech_started = False
+        wait_start = time.time()
+        max_total_seconds = 20.0
+        audio_chunks = []
+
+        print("🎤 Escuchando... (habla ahora)")
+
+        try:
+            stream = sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=chunk_samples,
+            )
+            stream.start()
+
+            while True:
+                if not speech_started and time.time() - wait_start > timeout:
+                    print("⏱️ Timeout esperando voz")
+                    stream.stop()
+                    stream.close()
+                    return None
+
+                audio_chunk, overflowed = stream.read(chunk_samples)
+                if overflowed:
+                    continue
+
+                audio_flat = audio_chunk.astype(np.float32).flatten()
+                rms = float(np.sqrt(np.mean(audio_flat ** 2)))
+
+                if rms >= 300.0:
+                    if not speech_started:
+                        speech_started = True
+                        speech_start = time.time()
+                        print("🗣️ Voz detectada")
+                    audio_chunks.append(audio_chunk)
+                    silence_chunks = 0
+                    continue
+
+                if speech_started:
+                    audio_chunks.append(audio_chunk)
+                    silence_chunks += 1
+
+                    if silence_chunks >= max_silence_chunks or (time.time() - speech_start) >= max_total_seconds:
+                        print("✅ Fin de habla")
+                        stream.stop()
+                        stream.close()
+                        if audio_chunks:
+                            return np.concatenate(audio_chunks, axis=0)
+                        return None
+        except Exception as e:
+            print(f"⚠️ Error VAD RMS: {e}")
+            return None
+
     def _conversation_mode(self, agent_fn: AgentFn) -> None:
         """Modo conversación continua."""
         print("\n💬 Modo conversación activado")
@@ -216,9 +278,19 @@ class VoiceLoop:
                 if self.loop_cfg.use_vad:
                     self._conversation_mode(agent_fn)
                 else:
-                    # Modo clásico
+                    # Fallback sin Silero: cortar por silencio en lugar de grabación fija.
                     wav_path = self.workspace / "_jarvis_input.wav"
-                    self.stt.record_to_wav(wav_path, seconds=float(self.loop_cfg.record_seconds))
+                    audio_data = self._detect_speech_rms(timeout=float(self.loop_cfg.record_seconds))
+
+                    if audio_data is None:
+                        self.tts.speak("No te he oído")
+                        continue
+
+                    with wave.open(str(wav_path), 'wb') as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(16000)
+                        wf.writeframes(audio_data.tobytes())
                     
                     text = self.stt.transcribe_wav(wav_path).strip()
                     

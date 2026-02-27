@@ -338,7 +338,6 @@ def _run_desktop(settings, paths) -> None:
 
     # ── Daemon (voz + LLM + tools) ────────────────────────────────────────────
     daemon = JarvisDaemon(bridge, sw, sh, settings, paths)
-    daemon.start()
 
     # Conectar HUD al view para sincronizar color de borde con el estado
     view.set_hud(daemon._hud)
@@ -368,7 +367,7 @@ def _run_desktop(settings, paths) -> None:
     class _AppDelegate(AppKit.NSObject):
 
         def applicationDidFinishLaunching_(self, notification) -> None:
-            pass  # El panel se abre solo con el acceso directo (Ctrl+Space / Dock)
+            daemon.start()
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
             """Clic en el acceso directo del escritorio → toggle del panel."""

@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import queue as queue_module
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+
+_logger = logging.getLogger(__name__)
 
 import requests
 from pydantic import ValidationError
@@ -41,6 +45,48 @@ from jarvis.tools.registry import ToolRegistry, build_default_registry
 
 
 Message = Dict[str, Any]
+
+# ── Streaming TTS: helpers de segmentación de frases ─────────────────────────
+
+_RE_SENT_SEP = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _emit_sentences(
+    buffer: str,
+    on_sentence: Callable[[str], None],
+    first_emitted: List[bool],
+    min_chars: int = 50,
+) -> str:
+    """
+    Divide el buffer en frases completas (según separadores .!?…) y llama
+    on_sentence() para cada una que esté lista.
+
+    - La primera frase se emite en cuanto termina (sin esperar min_chars).
+    - Las siguientes se acumulan hasta alcanzar min_chars antes de emitir.
+    - Retorna el fragmento restante (frase incompleta al final del buffer).
+    """
+    parts = _RE_SENT_SEP.split(buffer)
+    if len(parts) <= 1:
+        return buffer
+
+    accumulated = ""
+    for part in parts[:-1]:
+        part = part.strip()
+        if not part:
+            continue
+        accumulated = f"{accumulated} {part}".strip() if accumulated else part
+        should_emit = (not first_emitted[0]) or (len(accumulated) >= min_chars)
+        if should_emit:
+            on_sentence(accumulated)
+            first_emitted[0] = True
+            accumulated = ""
+
+    remainder = parts[-1]
+    if accumulated:
+        remainder = (
+            f"{accumulated} {remainder}".strip() if remainder.strip() else accumulated
+        )
+    return remainder
 
 
 @dataclass
@@ -1293,6 +1339,253 @@ class ToolAgent:
         else:
             text = await asyncio.to_thread(self._run_with_ollama, user_text, True)
         yield text
+
+    # ------------------------------------------------------------------
+    # Streaming TTS: run_sentences — emite frases conforme el LLM genera
+    # ------------------------------------------------------------------
+
+    def run_sentences(
+        self,
+        user_text: str,
+        on_sentence: Callable[[str], None],
+        interrupt_event: Optional[threading.Event] = None,
+    ) -> str:
+        """
+        Ejecuta el LLM y llama on_sentence(frase) para cada frase completa
+        conforme se genera, permitiendo TTS en paralelo.
+
+        Retorna el texto completo al finalizar (para historial/logs).
+        Para Claude y Groq usa streaming; para Gemini/Ollama hace run()
+        blocking y luego emite las frases de la respuesta completa.
+        """
+        user_text = (user_text or "").strip()
+        if not user_text:
+            msg = "Dime qué quieres que haga."
+            on_sentence(msg)
+            return msg
+
+        confirm_reply = self._handle_confirmation_turn(user_text)
+        if confirm_reply is not None:
+            self.state.add_user(user_text)
+            self._save_message("user", user_text)
+            self.state.add_assistant(confirm_reply)
+            self._save_message("assistant", confirm_reply)
+            on_sentence(confirm_reply)
+            return confirm_reply
+
+        self.state.add_user(user_text)
+        self._save_message("user", user_text)
+
+        if self.claude_client and self.config.use_claude:
+            return self._run_sentences_claude(user_text, on_sentence, interrupt_event)
+
+        if self.groq_client and self.config.use_groq:
+            return self._run_sentences_groq(user_text, on_sentence, interrupt_event)
+
+        # Gemini / Ollama: sin streaming propio — emitir frases de respuesta completa
+        if self.gemini_client and self.config.use_gemini:
+            full = self._run_with_gemini(user_text)
+        else:
+            full = self._run_with_ollama(user_text, use_tools=True)
+
+        # Emitir frases de la respuesta completa
+        first_emitted: List[bool] = [False]
+        remainder = _emit_sentences(full, on_sentence, first_emitted)
+        if remainder.strip():
+            on_sentence(remainder.strip())
+        return full
+
+    def _run_sentences_claude(
+        self,
+        user_text: str,
+        on_sentence: Callable[[str], None],
+        interrupt_event: Optional[threading.Event],
+    ) -> str:
+        """
+        Claude con streaming: emite frases vía on_sentence conforme llegan tokens.
+        Maneja tool use: para cada iteración se re-entra en streaming.
+        """
+        messages = self._build_claude_messages()
+        tools = self._cached_claude_tools
+        first_emitted: List[bool] = [False]
+
+        def _interrupted() -> bool:
+            return interrupt_event is not None and interrupt_event.is_set()
+
+        for loop_count in range(self.config.max_tool_loops):
+            if _interrupted():
+                break
+            buffer = ""
+            try:
+                with self.claude_client.messages.stream(
+                    model=self.config.claude_model,
+                    max_tokens=4096,
+                    system=SYSTEM_PROMPT,
+                    tools=tools,
+                    messages=messages,
+                ) as stream:
+                    for text_delta in stream.text_stream:
+                        if _interrupted():
+                            break
+                        buffer += text_delta
+                        buffer = _emit_sentences(buffer, on_sentence, first_emitted)
+                    final = stream.get_final_message()
+            except Exception as e:
+                _logger.warning("[sentences:claude] Stream error: %s — fallback blocking", e)
+                # Fallback a llamada bloqueante
+                return self._run_with_claude(user_text)
+
+            # Frase final restante en buffer
+            if buffer.strip() and not _interrupted() and final.stop_reason == "end_turn":
+                on_sentence(buffer.strip())
+
+            if final.stop_reason == "end_turn":
+                text = ""
+                for block in final.content:
+                    if hasattr(block, "text"):
+                        text += block.text
+                text = text.strip() or "No generé respuesta."
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
+
+            if final.stop_reason == "tool_use":
+                # Emitir buffer pre-tool si lo hay
+                if buffer.strip() and not _interrupted():
+                    on_sentence(buffer.strip())
+
+                # Ejecutar tools (mismo patrón que _run_with_claude)
+                messages.append({"role": "assistant", "content": final.content})
+                tool_results = []
+                for block in final.content:
+                    if block.type != "tool_use":
+                        continue
+                    tool_name = block.name
+                    tool_args = block.input
+
+                    if self.config.debug:
+                        _logger.debug(
+                            "[sentences:claude] tool=%s args=%s",
+                            tool_name,
+                            json.dumps(tool_args, ensure_ascii=False)[:80],
+                        )
+
+                    question = self.intent_tracker.check_tool_call(
+                        tool_name, tool_args, self.registry
+                    )
+                    if question:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps({
+                                "ok": False,
+                                "error": f"Parámetros faltantes. Pregunta: {question}",
+                            }, ensure_ascii=False),
+                        })
+                        continue
+
+                    confirm_evt = self._maybe_build_dry_run(tool_name, tool_args)
+                    if confirm_evt:
+                        text = self._render_dry_run_prompt(confirm_evt)
+                        self.state.add_assistant(text)
+                        self._save_message("assistant", text)
+                        on_sentence(text)
+                        return text
+
+                    tool_out = self._execute_tool(tool_name, tool_args)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(tool_out, ensure_ascii=False),
+                    })
+
+                messages.append({"role": "user", "content": tool_results})
+                continue  # siguiente iteración → streaming de respuesta post-tool
+
+            # stop_reason inesperado
+            if buffer.strip() and not _interrupted():
+                on_sentence(buffer.strip())
+            text = buffer.strip() or "Respuesta inesperada."
+            self.state.add_assistant(text)
+            self._save_message("assistant", text)
+            return text
+
+        msg = "Límite de iteraciones de herramientas alcanzado."
+        self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
+        return msg
+
+    def _run_sentences_groq(
+        self,
+        user_text: str,
+        on_sentence: Callable[[str], None],
+        interrupt_event: Optional[threading.Event],
+    ) -> str:
+        """
+        Groq con streaming (primera iteración sin tools para latencia mínima).
+        Si el modelo usa tools, cae al loop bloqueante de _run_with_groq().
+        """
+        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
+        for msg in truncate_history(self.state.history, max_messages=20):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+
+        first_emitted: List[bool] = [False]
+
+        def _interrupted() -> bool:
+            return interrupt_event is not None and interrupt_event.is_set()
+
+        # Primera iteración: streaming sin tools para latencia mínima.
+        # Si el modelo genera tool_calls en el stream, abortamos y usamos blocking.
+        buffer = ""
+        got_tool_call = False
+        try:
+            stream = self.groq_client.chat.completions.create(
+                model=self.config.groq_model,
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.7,
+                stream=True,
+            )
+            for chunk in stream:
+                if _interrupted():
+                    break
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice is None:
+                    continue
+                # Si el modelo intenta tool_calls, abortar streaming
+                if choice.delta.tool_calls:
+                    got_tool_call = True
+                    break
+                delta = choice.delta.content
+                if delta:
+                    buffer += delta
+                    buffer = _emit_sentences(buffer, on_sentence, first_emitted)
+        except Exception as e:
+            _logger.warning("[sentences:groq] Stream error: %s — fallback blocking", e)
+            return self._run_with_groq(user_text)
+
+        if got_tool_call:
+            # Caer al loop bloqueante que ya maneja tools correctamente
+            _logger.debug("[sentences:groq] Tool call detectado — usando loop blocking")
+            full = self._run_with_groq(user_text)
+            # Emitir frases de la respuesta completa si no se emitió nada aún
+            if not first_emitted[0]:
+                rem2 = _emit_sentences(full, on_sentence, first_emitted)
+                if rem2.strip():
+                    on_sentence(rem2.strip())
+            return full
+
+        # Emitir resto del buffer (última frase sin separador)
+        if buffer.strip() and not _interrupted():
+            on_sentence(buffer.strip())
+
+        full_text = buffer.strip() or "No generé respuesta."
+        self.state.add_assistant(full_text)
+        self._save_message("assistant", full_text)
+        return full_text
 
 
 def tool_agent_from_settings(

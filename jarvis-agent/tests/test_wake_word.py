@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from jarvis.voice.wake_word import OpenWakeWordListener, WakeWordConfig
@@ -50,3 +51,34 @@ def test_single_hit_mode_triggers_immediately():
     listener = _listener(oww_min_consecutive_hits=1)
     with patch("time.monotonic", return_value=10.0):
         assert listener._update_detection_state(score=0.6, rms=200.0) is True
+
+
+def test_resolve_input_device_falls_back_when_default_is_invalid():
+    listener = _listener()
+    fake_devices = [
+        {"name": "Output only", "max_input_channels": 0},
+        {"name": "Mic", "max_input_channels": 1},
+    ]
+    fake_default = SimpleNamespace(device=[-1, -1])
+
+    with (
+        patch("jarvis.voice.wake_word.sd.default", fake_default),
+        patch("jarvis.voice.wake_word.sd.query_devices", side_effect=[fake_devices]),
+    ):
+        assert listener._resolve_input_device() == 1
+
+
+def test_resolve_input_device_raises_when_no_input_devices_exist():
+    listener = _listener()
+    fake_default = SimpleNamespace(device=[-1, -1])
+
+    with (
+        patch("jarvis.voice.wake_word.sd.default", fake_default),
+        patch("jarvis.voice.wake_word.sd.query_devices", return_value=[{"name": "Output", "max_input_channels": 0}]),
+    ):
+        try:
+            listener._resolve_input_device()
+        except RuntimeError as exc:
+            assert "No encontré ningún dispositivo de entrada" in str(exc)
+        else:
+            raise AssertionError("Esperaba RuntimeError cuando no hay dispositivos de entrada")

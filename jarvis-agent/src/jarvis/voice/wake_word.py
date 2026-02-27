@@ -64,6 +64,33 @@ class OpenWakeWordListener:
         _cap = max(1, cfg.oww_pre_buffer_ms * self.SAMPLE_RATE // (1000 * self.CHUNK_SAMPLES))
         self._pre_buffer: collections.deque = collections.deque(maxlen=_cap)
 
+    def _resolve_input_device(self) -> Optional[int]:
+        """Resuelve un dispositivo de entrada utilizable si no hay default válido."""
+        if self.cfg.device_index is not None:
+            return self.cfg.device_index
+
+        try:
+            default_input = sd.default.device[0]
+            if isinstance(default_input, int) and default_input >= 0:
+                sd.query_devices(default_input, "input")
+                return default_input
+        except Exception:
+            pass
+
+        try:
+            devices = sd.query_devices()
+        except Exception as exc:
+            raise RuntimeError(f"No pude listar dispositivos de audio: {exc}") from exc
+
+        for idx, device in enumerate(devices):
+            if int(device.get("max_input_channels", 0) or 0) > 0:
+                print(f"🎤 Wake word usando dispositivo {idx}: {device.get('name', 'desconocido')}")
+                return idx
+
+        raise RuntimeError(
+            "No encontré ningún dispositivo de entrada. Revisa permisos de micrófono o define WAKE_WORD_DEVICE."
+        )
+
     def _update_detection_state(self, score: float, rms: float) -> bool:
         """
         Devuelve True solo cuando la detección es estable:
@@ -130,12 +157,13 @@ class OpenWakeWordListener:
                 "openwakeword no instalado. Instala con: pip install openwakeword"
             )
 
+        device_index = self._resolve_input_device()
         self._stream = sd.InputStream(
             samplerate=self.SAMPLE_RATE,
             channels=1,
             dtype="int16",
             blocksize=self.CHUNK_SAMPLES,
-            device=self.cfg.device_index,
+            device=device_index,
         )
         self._stream.start()
 

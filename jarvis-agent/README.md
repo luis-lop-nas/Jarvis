@@ -48,6 +48,69 @@ source .venv/bin/activate
 PYTHONPATH=src uvicorn jarvis.web.server:app --host 0.0.0.0 --port 8000
 ```
 
+## Engines de voz (TTS)
+
+Jarvis usa **Kokoro** como engine TTS por defecto — síntesis neural local, sin internet, ~150 ms de latencia en Apple Silicon.
+
+| Engine | Calidad | Conexión | Latencia | Configuración |
+|--------|---------|----------|----------|---------------|
+| `kokoro` | ⭐⭐⭐⭐⭐ | Offline | ~150 ms | `TTS_ENGINE=kokoro` |
+| `elevenlabs` | ⭐⭐⭐⭐⭐ | Online | ~400 ms | Requiere API Key |
+| `macos` | ⭐⭐ | Offline | ~50 ms | Sin instalación |
+
+### Instalar Kokoro
+
+```bash
+pip install ".[kokoro]"
+```
+
+En el primer arranque, Jarvis descarga automáticamente los modelos (~300 MB) en `~/Documents/Jarvis/models/kokoro/`.
+
+### Voces disponibles
+
+| Idioma | Voz | Descripción |
+|--------|-----|-------------|
+| Español | `ef_dora` | Femenina (default) |
+| Español | `em_alex` | Masculina |
+| Español | `em_santa` | Masculina grave |
+| Inglés (US) | `af_heart` | Femenina |
+| Inglés (US) | `af_bella` | Femenina |
+| Inglés (US) | `am_adam` | Masculina |
+| Inglés (US) | `am_michael` | Masculina |
+
+### Cambiar entre engines
+
+En `.env`:
+
+```env
+# Kokoro (default, local)
+TTS_ENGINE=kokoro
+KOKORO_VOICE=ef_dora        # voz española femenina
+KOKORO_SPEED=1.0            # 0.5 (lento) – 2.0 (rápido)
+KOKORO_LANGUAGE=es          # "es" | "en-us" | "en-gb"
+
+# ElevenLabs (nube, mayor calidad)
+TTS_ENGINE=elevenlabs
+ELEVENLABS_API_KEY=tu-clave
+ELEVENLABS_VOICE_ID=tu-voice-id
+
+# macOS nativo (fallback, sin instalación)
+TTS_ENGINE=macos
+```
+
+### Uso desde código
+
+```python
+from jarvis.voice.tts import TTS, TTSConfig
+
+tts = TTS(TTSConfig(engine="kokoro", kokoro_voice="em_alex", kokoro_language="es"))
+tts.speak("Hola, soy Jarvis.")          # síncrono
+tts.speak_nonblocking("Procesando...")  # no bloqueante
+tts.stop()                              # interrupción inmediata
+```
+
+---
+
 ## Dry-run (acciones sensibles)
 
 Jarvis aplica dry-run por defecto antes de ejecutar acciones sensibles.
@@ -148,3 +211,8 @@ Fase 2 (endurecimiento progresivo):
 - Revisar campos opcionales -> obligatorios tool por tool.
 - Añadir `Literal`/rangos para enums y parámetros numéricos.
 - Modelar `data` de `ToolOutput` de forma más específica por herramienta.
+
+
+cd /Users/luichi/Documents/Jarvis/jarvis-agent                                                                                                        
+  source .venv/bin/activate                                 
+  PYTHONPATH=src python -m jarvis --desktop

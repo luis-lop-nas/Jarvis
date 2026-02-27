@@ -21,6 +21,7 @@ Ciclo:
 
 from __future__ import annotations
 
+import logging
 import queue as _queue
 import re
 import threading
@@ -29,6 +30,8 @@ import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_logger = logging.getLogger(__name__)
 
 import numpy as np
 import sounddevice as sd
@@ -1091,12 +1094,70 @@ class JarvisDaemon:
                 self._hud.show_text(response)
                 return
 
-            try:
-                response = self.agent.run(augmented)
-                self._llm_cb.record_success()
-            except Exception as llm_err:
-                self._llm_cb.record_failure()
-                raise llm_err
+            # ── Streaming TTS: LLM en hilo background + TTS en paralelo ─────
+            t_start = time.monotonic()
+            sentence_queue: _queue.Queue = _queue.Queue()
+            full_response_parts: List[str] = []
+            llm_error: List[Optional[Exception]] = [None]
+            hud_parts: List[str] = []
+
+            def _on_sentence(sentence: str) -> None:
+                """Llamado desde el hilo LLM al completarse cada frase."""
+                clean = _clean_for_speech(sentence)
+                if clean:
+                    sentence_queue.put(clean)
+                # Actualizar HUD con texto acumulado
+                hud_parts.append(sentence)
+                self._hud.show_text(" ".join(hud_parts))
+                if not self.bridge._state_name == "acting":  # type: ignore[attr-defined]
+                    self.bridge.set_state("acting")
+
+            def _llm_worker() -> None:
+                try:
+                    result = self.agent.run_sentences(
+                        augmented,
+                        on_sentence=_on_sentence,
+                        interrupt_event=self._interrupt_event,
+                    )
+                    full_response_parts.append(result)
+                    self._llm_cb.record_success()
+                except Exception as e:
+                    self._llm_cb.record_failure()
+                    llm_error[0] = e
+                    _logger.error("Error LLM en streaming: %s", e)
+                finally:
+                    sentence_queue.put(None)  # centinela de fin de stream
+
+            def _on_first_audio() -> None:
+                elapsed = time.monotonic() - t_start
+                _logger.info("[TTS-LATENCY] Primer audio %.3fs desde inicio", elapsed)
+
+            llm_thread = threading.Thread(
+                target=_llm_worker, name="jarvis-llm-stream", daemon=True
+            )
+            llm_thread.start()
+
+            # Iniciar TTS en paralelo (consume de sentence_queue conforme llega)
+            self.tts.speak_streaming(
+                sentence_queue,
+                interrupt_event=self._interrupt_event,
+                on_first_audio=_on_first_audio,
+            )
+
+            # Esperar a que TTS termine (o se interrumpa)
+            while self.tts.is_speaking:
+                if self._interrupt_event.is_set():
+                    self.tts.stop()
+                    break
+                time.sleep(0.05)
+
+            # Esperar a que el hilo LLM finalice
+            llm_thread.join(timeout=5.0)
+
+            if llm_error[0] is not None:
+                raise llm_error[0]
+
+            response = full_response_parts[0] if full_response_parts else ""
 
             # ── Actualizar tracker con la respuesta del LLM
             self.agent.intent_tracker.analyze_llm_response(response)
@@ -1105,31 +1166,15 @@ class JarvisDaemon:
                 return
 
             print(f"🤖 Jarvis: «{response}»")
-            self.bridge.set_state("acting")
 
-            # ── Actualizar chat panel con la respuesta
+            # ── Actualizar chat panel con la respuesta completa
             if self._chat_panel is not None:
                 self._chat_panel.add_jarvis_message(response)
 
-            # ── Mostrar respuesta en HUD; añadir estado de intent si está activo
+            # ── Actualizar HUD con respuesta completa + estado de intent
             intent_status = self.agent.intent_tracker.get_status_text()
             hud_text = f"{intent_status}\n\n{response}" if intent_status else response
             self._hud.show_text(hud_text)
-
-            # ── Limpiar para TTS: sin markdown, sin <function=...>, sin anotaciones
-            speech_text = _clean_for_speech(response)
-            if not speech_text:
-                self.bridge.set_state("idle")
-                return
-
-            # ── Hablar respuesta completa de una vez → sin pausas entre frases
-            if not self._interrupt_event.is_set():
-                self.tts.speak_nonblocking(speech_text)
-                while self.tts.is_speaking:
-                    if self._interrupt_event.is_set():
-                        self.tts.stop()
-                        break
-                    time.sleep(0.05)
 
         except Exception as e:
             print(f"⚠️ Error procesando texto: {e}")

@@ -100,6 +100,11 @@ cad = [
   "build123d>=0.7.0",
 ]
 
+# Kokoro TTS local (Apple Silicon, ~150ms latencia)
+kokoro = [
+  "kokoro-onnx>=0.4.0",
+]
+
 [project.scripts]
 # Esto crea el comando "jarvis" en tu entorno:
 #   jarvis
