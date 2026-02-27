@@ -21,11 +21,8 @@ Ciclo:
 
 from __future__ import annotations
 
-import logging
-import os
 import queue as _queue
 import re
-import sys
 import threading
 import time
 import wave
@@ -37,15 +34,13 @@ import numpy as np
 import sounddevice as sd
 
 from jarvis.agent.circuit_breaker import LLMCircuitBreaker
-from jarvis.agent.tool_agent import tool_agent_from_settings
+from jarvis.agent.tool_agent import ToolAgent, ToolAgentConfig, tool_agent_from_settings
 from jarvis.memory.store import MemoryStore
-from jarvis.tools.registry import ToolRegistry, build_default_registry
+from jarvis.tools.registry import ToolRegistry, ToolSpec, build_default_registry
 from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
 from jarvis.intents.good_morning import run_morning_briefing, answer_fact_follow_up
 from jarvis.vision.camera_context import CameraContextAnalyzer, CameraContextConfig
-
-_logger = logging.getLogger(__name__)
 
 # ── Silero VAD (ONNX directo, sin torchaudio) ────────────────────────────────
 
@@ -286,7 +281,7 @@ class JarvisDaemon:
     # VAD RMS (legacy — fallback si Silero no está disponible)
     _VAD_CHUNK_MS     = 30
     _VAD_THRESHOLD    = 300
-    _VAD_SILENCE_SEGS = 30
+    _VAD_SILENCE_SEGS = 15
     _VAD_TIMEOUT_S    = 15.0
     _VAD_MAX_S        = 30.0
 
@@ -350,9 +345,8 @@ class JarvisDaemon:
         # ── TTS
         self.tts = TTS(TTSConfig(
             engine=getattr(settings, "tts_engine", "macos"),
-            kokoro_voice=getattr(settings, "kokoro_voice", "ef_dora"),
-            kokoro_speed=getattr(settings, "kokoro_speed", 1.0),
-            kokoro_language=getattr(settings, "kokoro_language", "es"),
+            elevenlabs_api_key=getattr(settings, "elevenlabs_api_key", "") or None,
+            elevenlabs_voice_id=getattr(settings, "elevenlabs_voice_id", "") or None,
         ))
 
         # ── HUD (panel flotante de subtítulos)
@@ -437,10 +431,6 @@ class JarvisDaemon:
         """
         if not action:
             return
-        action = action.strip().lower()
-        # Evitar choques de audio: durante grabación/TTS solo permitimos "interrupt".
-        if action != "interrupt" and (self._is_recording or self.tts.is_speaking):
-            return
         self._trigger_queue.put(("gesture", action))
 
     def interrupt(self) -> None:
@@ -463,6 +453,8 @@ class JarvisDaemon:
 
     def start(self) -> None:
         self._running = True
+        if self._camera_ctx:
+            self._camera_ctx.start()
         self._main_thread = threading.Thread(
             target=self._run, name="jarvis-daemon", daemon=True
         )
@@ -493,9 +485,6 @@ class JarvisDaemon:
     def _run(self) -> None:
         self._request_accessibility()
         self._request_microphone_permission()
-        self._request_camera_permission()
-        if self._camera_ctx:
-            self._camera_ctx.start()
         self._setup_hotkey()
         self._wake_ok = self._start_wake_word()
 
@@ -535,27 +524,8 @@ class JarvisDaemon:
     def _handle_gesture_event(self, action: str) -> None:
         """Gestiona acciones de gesto encoladas desde GestureController."""
         action = (action or "").strip().lower()
-
-        def _has_pending_action() -> bool:
-            agent = getattr(self, "agent", None)
-            if agent is None:
-                return False
-            pending_attr = getattr(agent, "has_pending_confirmation", False)
-            if callable(pending_attr):
-                has_pending_confirmation = bool(pending_attr())
-            else:
-                has_pending_confirmation = bool(pending_attr)
-            has_pending_intent = bool(
-                getattr(getattr(agent, "intent_tracker", None), "is_pending", lambda: False)()
-            )
-            return has_pending_confirmation or has_pending_intent
-
-        def _audio_busy() -> bool:
-            return bool(getattr(self, "_is_recording", False) or self.tts.is_speaking)
-
         if action == "interrupt":
-            if _audio_busy():
-                self.interrupt()
+            self.interrupt()
             return
         if action == "pause":
             self.pause_gesture()
@@ -567,16 +537,13 @@ class JarvisDaemon:
             self.trigger_voice_input()
             return
         if action == "confirm":
-            if _has_pending_action():
-                self.submit_text("sí, confirmo")
+            self.submit_text("sí, confirmo")
             return
         if action == "yes":
-            if _has_pending_action():
-                self.submit_text("sí")
+            self.submit_text("sí")
             return
         if action == "no":
-            if _has_pending_action():
-                self.submit_text("no, cancela")
+            self.submit_text("no, cancela")
             return
 
         print(f"⚠️ Acción de gesto desconocida: {action}")
@@ -725,10 +692,11 @@ class JarvisDaemon:
                 return None
 
             if not voice_started or not frames:
+                if wait_timeout_s is not None:
+                    # En modo follow-up, silencio = usuario no quiso hablar → no grabar
+                    return None
                 print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f}, umbral={self._VAD_THRESHOLD})")
-                # No hacer fallback a grabación fija: el usuario pidió respuesta
-                # al terminar de hablar, no una ventana temporal rígida.
-                return None
+                return self.stt.record_to_wav(out_path, seconds=5.0)
 
             audio = np.concatenate(frames, axis=0)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -857,9 +825,10 @@ class JarvisDaemon:
                 return None
 
             if not voice_started or not frames:
+                if wait_timeout_s is not None:
+                    return None  # follow-up: silencio = el usuario no quiso hablar
                 print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f})")
-                # Sin voz detectada: volver a idle en lugar de grabación fija de 5s.
-                return None
+                return self.stt.record_to_wav(out_path, seconds=5.0)
 
             audio = np.concatenate(frames, axis=0)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1122,70 +1091,12 @@ class JarvisDaemon:
                 self._hud.show_text(response)
                 return
 
-            # ── Streaming TTS: LLM en hilo background + TTS en paralelo ─────
-            t_start = time.monotonic()
-            sentence_queue: _queue.Queue = _queue.Queue()
-            full_response_parts: List[str] = []
-            llm_error: List[Optional[Exception]] = [None]
-            hud_parts: List[str] = []
-
-            def _on_sentence(sentence: str) -> None:
-                """Llamado desde el hilo LLM al completarse cada frase."""
-                clean = _clean_for_speech(sentence)
-                if clean:
-                    sentence_queue.put(clean)
-                # Actualizar HUD con texto acumulado
-                hud_parts.append(sentence)
-                self._hud.show_text(" ".join(hud_parts))
-                if self.bridge.state_name != "acting":
-                    self.bridge.set_state("acting")
-
-            def _llm_worker() -> None:
-                try:
-                    result = self.agent.run_sentences(
-                        augmented,
-                        on_sentence=_on_sentence,
-                        interrupt_event=self._interrupt_event,
-                    )
-                    full_response_parts.append(result)
-                    self._llm_cb.record_success()
-                except Exception as e:
-                    self._llm_cb.record_failure()
-                    llm_error[0] = e
-                    _logger.error("Error LLM en streaming: %s", e)
-                finally:
-                    sentence_queue.put(None)  # centinela de fin de stream
-
-            def _on_first_audio() -> None:
-                elapsed = time.monotonic() - t_start
-                _logger.info("[TTS-LATENCY] Primer audio %.3fs desde inicio", elapsed)
-
-            llm_thread = threading.Thread(
-                target=_llm_worker, name="jarvis-llm-stream", daemon=True
-            )
-            llm_thread.start()
-
-            # Iniciar TTS en paralelo (consume de sentence_queue conforme llega)
-            self.tts.speak_streaming(
-                sentence_queue,
-                interrupt_event=self._interrupt_event,
-                on_first_audio=_on_first_audio,
-            )
-
-            # Esperar a que TTS termine (o se interrumpa)
-            while self.tts.is_speaking:
-                if self._interrupt_event.is_set():
-                    self.tts.stop()
-                    break
-                time.sleep(0.05)
-
-            # Esperar a que el hilo LLM finalice
-            llm_thread.join(timeout=5.0)
-
-            if llm_error[0] is not None:
-                raise llm_error[0]
-
-            response = full_response_parts[0] if full_response_parts else ""
+            try:
+                response = self.agent.run(augmented)
+                self._llm_cb.record_success()
+            except Exception as llm_err:
+                self._llm_cb.record_failure()
+                raise llm_err
 
             # ── Actualizar tracker con la respuesta del LLM
             self.agent.intent_tracker.analyze_llm_response(response)
@@ -1194,15 +1105,31 @@ class JarvisDaemon:
                 return
 
             print(f"🤖 Jarvis: «{response}»")
+            self.bridge.set_state("acting")
 
-            # ── Actualizar chat panel con la respuesta completa
+            # ── Actualizar chat panel con la respuesta
             if self._chat_panel is not None:
                 self._chat_panel.add_jarvis_message(response)
 
-            # ── Actualizar HUD con respuesta completa + estado de intent
+            # ── Mostrar respuesta en HUD; añadir estado de intent si está activo
             intent_status = self.agent.intent_tracker.get_status_text()
             hud_text = f"{intent_status}\n\n{response}" if intent_status else response
             self._hud.show_text(hud_text)
+
+            # ── Limpiar para TTS: sin markdown, sin <function=...>, sin anotaciones
+            speech_text = _clean_for_speech(response)
+            if not speech_text:
+                self.bridge.set_state("idle")
+                return
+
+            # ── Hablar respuesta completa de una vez → sin pausas entre frases
+            if not self._interrupt_event.is_set():
+                self.tts.speak_nonblocking(speech_text)
+                while self.tts.is_speaking:
+                    if self._interrupt_event.is_set():
+                        self.tts.stop()
+                        break
+                    time.sleep(0.05)
 
         except Exception as e:
             print(f"⚠️ Error procesando texto: {e}")
@@ -1258,45 +1185,6 @@ class JarvisDaemon:
             # AVFoundation no disponible o no necesario — ignorar silenciosamente
             print(f"ℹ️  Verificación de permiso de micrófono: {e}")
 
-    def _request_camera_permission(self) -> None:
-        """Verifica y solicita permiso de cámara en macOS (AVFoundation)."""
-        try:
-            import AVFoundation
-
-            # OpenCV debe evitar pedir permisos desde hilos secundarios.
-            os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
-
-            status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
-                AVFoundation.AVMediaTypeVideo
-            )
-            # 0=notDetermined, 1=restricted, 2=denied, 3=authorized
-            if status == 3:
-                print("✅ Permiso de cámara: autorizado")
-                return
-            if status == 2:
-                print("❌ Permiso de cámara DENEGADO")
-                print("   Ve a: Ajustes del Sistema → Privacidad y Seguridad → Cámara")
-                print("   y activa el permiso para Terminal (o Python)")
-                return
-            if status == 0:
-                print("⏳ Solicitando permiso de cámara...")
-                done = threading.Event()
-
-                def _handler(granted):
-                    if granted:
-                        print("✅ Permiso de cámara concedido")
-                    else:
-                        print("❌ Permiso de cámara denegado por el usuario")
-                        print("   Actívalo en: Ajustes → Privacidad → Cámara → Terminal")
-                    done.set()
-
-                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
-                    AVFoundation.AVMediaTypeVideo, _handler
-                )
-                done.wait(timeout=30)
-        except Exception as e:
-            print(f"ℹ️  Verificación de permiso de cámara: {e}")
-
     def _request_accessibility(self) -> None:
         try:
             from jarvis.overlay.dock import check_accessibility_permission
@@ -1338,11 +1226,6 @@ class JarvisDaemon:
     # ── Hotkey ────────────────────────────────────────────────────────────────
 
     def _setup_hotkey(self) -> None:
-        hotkey_enabled = os.getenv("JARVIS_ENABLE_PYNPUT_HOTKEY", "").strip().lower()
-        if sys.platform == "darwin" and hotkey_enabled not in {"1", "true", "yes", "on"}:
-            print("⌨️  Hotkey desactivada en macOS (pynput inestable en este sistema).")
-            print(f"   Usa wake word o activa JARVIS_ENABLE_PYNPUT_HOTKEY=1 para forzar {self.HOTKEY}.")
-            return
         try:
             from pynput import keyboard
 
