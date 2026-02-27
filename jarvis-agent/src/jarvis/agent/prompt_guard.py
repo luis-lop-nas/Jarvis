@@ -49,6 +49,10 @@ _TOOL_INJECTION_PATTERNS: List[re.Pattern] = [
     re.compile(r"~/(\.ssh|\.aws|\.gnupg)/", re.I),
 ]
 
+# Patrón de metacaracteres que se omite para el arg 'command' del tool 'shell'
+# (la shell tool tiene su propia capa de seguridad en shell_guard.py)
+_METACHAR_PATTERN = _TOOL_INJECTION_PATTERNS[1]
+
 
 @dataclass
 class InjectionReport:
@@ -104,6 +108,10 @@ def scan_tool_args(tool_name: str, args: Dict[str, Any]) -> InjectionReport:
         if not isinstance(value, str):
             continue
         for pat in _TOOL_INJECTION_PATTERNS:
+            # El arg 'command' del tool 'shell' puede contener pipes/semicolons legítimos;
+            # su seguridad la gestiona shell_guard.py, no este módulo.
+            if pat is _METACHAR_PATTERN and tool_name == "shell" and key == "command":
+                continue
             if pat.search(value):
                 matched.append(f"tool_inject[{key}]:{pat.pattern[:40]}")
 

@@ -1,4 +1,4 @@
-“””
+"""
 shell.py
 
 Tool: shell
@@ -10,15 +10,15 @@ Objetivo:
 
 Seguridad:
 - Todos los comandos pasan por analyze_shell_command() en shell_guard.py.
-  - “deny”    → bloqueado inmediatamente (sin ejecución).
-  - “confirm” → devuelve dry_run al agente; el usuario debe confirmar
+  - "deny"    → bloqueado inmediatamente (sin ejecución).
+  - "confirm" → devuelve dry_run al agente; el usuario debe confirmar
                 ANTES de que se ejecute (gestionado en tool_agent.py).
-  - “allow”   → se ejecuta directamente.
+  - "allow"   → se ejecuta directamente.
 - El parámetro allow_dangerous fue eliminado: la política de confirmación
   se gestiona exclusivamente por el agente (tool_agent._maybe_build_dry_run),
   nunca por los args generados por el LLM.
 - stdout/stderr se truncan a MAX_OUTPUT_CHARS para evitar volcar datos enormes.
-“””
+"""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ def run_shell(args: Dict[str, Any]) -> Dict[str, Any]:
         )
     else:
         # Ejecuta sin shell: más seguro (sin interpretación).
-        # Requiere que command esté “tokenizado”.
+        # Requiere que command esté "tokenizado".
         parts: List[str] = shlex.split(command)
         completed = subprocess.run(
             parts,

@@ -84,12 +84,12 @@ class TestReadTextSecurity:
     def test_blocks_oversized_file(self, tmp_path):
         p = tmp_path / "big.bin"
         p.write_bytes(b"x")
-        # Mockear solo el stat de la Path resuelta para simular un archivo grande
         import unittest.mock as _um
-        orig_stat = p.stat()
+        import stat as _stat_module
 
         class _FakeStat:
             st_size = MAX_READ_BYTES + 1
+            st_mode = _stat_module.S_IFREG | 0o644  # regular file — necesario para is_dir()
 
         with _um.patch("pathlib.Path.stat", return_value=_FakeStat()):
             with pytest.raises(ValueError, match="demasiado grande"):
@@ -151,13 +151,21 @@ class TestWriteTextSecurity:
 
 class TestPathTraversal:
     def test_resolves_and_blocks_traversal_to_etc(self, tmp_path):
-        """../../etc/passwd desde un directorio seguro debe bloquearse."""
-        traversal = str(tmp_path / ".." / ".." / ".." / "etc" / "passwd")
+        """Path traversal que resuelve a /etc/passwd debe bloquearse."""
+        # tmp_path está ~10 niveles de profundidad en macOS; subir suficientes
+        # niveles para llegar a root y luego bajar a /etc/passwd
+        depth = len(tmp_path.parts)
+        up = Path(*[".."] * depth)
+        traversal = str(tmp_path / up / "etc" / "passwd")
         with pytest.raises(PermissionError):
             run_filesystem({"action": "read_text", "path": traversal})
 
     def test_resolves_and_blocks_traversal_to_ssh(self, tmp_path):
-        traversal = str(tmp_path / ".." / ".." / ".." / ".ssh" / "id_rsa")
+        """Path traversal que resuelve a ~/.ssh/id_rsa debe bloquearse."""
+        depth = len(tmp_path.parts)
+        up = Path(*[".."] * depth)
+        home_rel = Path.home().relative_to("/")  # e.g. "Users/luichi"
+        traversal = str(tmp_path / up / home_rel / ".ssh" / "id_rsa")
         with pytest.raises(PermissionError):
             run_filesystem({"action": "read_text", "path": traversal})
 
