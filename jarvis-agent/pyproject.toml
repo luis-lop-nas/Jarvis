@@ -49,9 +49,6 @@ dependencies = [
   # --- Groq API ---
   "groq>=0.9.0",                 # SDK Groq para LLM rápido
 
-  # --- ElevenLabs TTS ---
-  "elevenlabs>=1.0.0",           # SDK ElevenLabs para TTS de alta calidad
-
   # --- Google Gemini ---
   "google-genai>=1.0.0",         # SDK Gemini 2.0 Flash
 

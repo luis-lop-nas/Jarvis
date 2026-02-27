@@ -11,7 +11,7 @@ import queue
 import threading
 import time
 from typing import List, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 from jarvis.agent.tool_agent import _emit_sentences
@@ -228,68 +228,3 @@ class TestSpeakStreaming:
             tts.speak_streaming(q, on_first_audio=lambda: fired.append(True))
             tts.wait()
         assert fired == [True]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# speak_queued ElevenLabs (mocked)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestSpeakQueuedElevenLabs:
-    def _make_el_tts(self) -> TTS:
-        cfg = TTSConfig(
-            engine="elevenlabs",
-            elevenlabs_api_key="fake-key",
-            elevenlabs_voice_id="fake-voice",
-        )
-        return TTS(cfg)
-
-    def test_fetches_audio_and_plays(self, tmp_path):
-        tts = self._make_el_tts()
-        q: "queue.Queue[Optional[str]]" = queue.Queue()
-        _fill_queue(q, ["Hola mundo.", None])
-
-        # Crear MP3 falso
-        fake_mp3 = str(tmp_path / "fake.mp3")
-        with open(fake_mp3, "wb") as f:
-            f.write(b"\xff\xfb")  # bytes mínimos
-
-        with patch.object(tts, "_fetch_elevenlabs_audio", return_value=fake_mp3):
-            with patch("subprocess.Popen") as mock_popen:
-                mock_proc = MagicMock()
-                mock_proc.poll.return_value = 0  # terminado
-                mock_popen.return_value = mock_proc
-                tts.speak_queued(q)
-
-        mock_popen.assert_called_once()
-        call_args = mock_popen.call_args[0][0]
-        assert call_args[0] == "afplay"
-
-    def test_fetch_failure_skips_sentence(self):
-        tts = self._make_el_tts()
-        q: "queue.Queue[Optional[str]]" = queue.Queue()
-        _fill_queue(q, ["Fallo.", None])
-
-        with patch.object(tts, "_fetch_elevenlabs_audio", return_value=None):
-            with patch("subprocess.Popen") as mock_popen:
-                tts.speak_queued(q)
-        mock_popen.assert_not_called()
-
-    def test_prefetches_next_during_playback(self):
-        """Comprueba que se inicia la descarga del siguiente audio mientras reproduce el actual."""
-        tts = self._make_el_tts()
-        q: "queue.Queue[Optional[str]]" = queue.Queue()
-        _fill_queue(q, ["Primera.", "Segunda.", None])
-
-        fetch_calls: List[str] = []
-
-        def _fake_fetch(text: str) -> Optional[str]:
-            fetch_calls.append(text)
-            return None  # no reproducir para simplificar
-
-        with patch.object(tts, "_fetch_elevenlabs_audio", side_effect=_fake_fetch):
-            tts.speak_queued(q)
-
-        # Ambas frases deben haberse intentado descargar
-        assert "Primera." in fetch_calls
-        assert "Segunda." in fetch_calls

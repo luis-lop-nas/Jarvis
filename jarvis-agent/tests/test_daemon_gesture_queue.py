@@ -9,6 +9,13 @@ from jarvis.overlay.daemon import JarvisDaemon
 def _make_daemon_stub() -> JarvisDaemon:
     daemon = JarvisDaemon.__new__(JarvisDaemon)
     daemon._trigger_queue = queue.Queue()
+    daemon._is_recording = False
+    daemon.tts = MagicMock()
+    daemon.tts.is_speaking = False
+    daemon.agent = MagicMock()
+    daemon.agent.has_pending_confirmation.return_value = False
+    daemon.agent.intent_tracker = MagicMock()
+    daemon.agent.intent_tracker.is_pending.return_value = False
     daemon.interrupt = MagicMock()
     daemon.pause_gesture = MagicMock()
     daemon.resume_gesture = MagicMock()
@@ -42,6 +49,7 @@ def test_handle_gesture_event_pause_resume_voice():
 
 def test_handle_gesture_event_text_actions():
     daemon = _make_daemon_stub()
+    daemon.agent.has_pending_confirmation.return_value = True
     daemon._handle_gesture_event("confirm")
     daemon._handle_gesture_event("yes")
     daemon._handle_gesture_event("no")
@@ -49,3 +57,11 @@ def test_handle_gesture_event_text_actions():
     daemon.submit_text.assert_any_call("sí, confirmo")
     daemon.submit_text.assert_any_call("sí")
     daemon.submit_text.assert_any_call("no, cancela")
+
+
+def test_handle_gesture_event_text_actions_without_pending_are_ignored():
+    daemon = _make_daemon_stub()
+    daemon._handle_gesture_event("confirm")
+    daemon._handle_gesture_event("yes")
+    daemon._handle_gesture_event("no")
+    daemon.submit_text.assert_not_called()

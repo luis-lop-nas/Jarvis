@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -64,6 +66,7 @@ class CameraContextAnalyzer:
 
         # MediaPipe (inicializado lazy en el hilo)
         self._mp_face = None
+        self._face_cascade = None
 
     # ── API pública ──────────────────────────────────────────────────────────
 
@@ -119,6 +122,8 @@ class CameraContextAnalyzer:
     # ── Hilo interno ─────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
+        # Evita que OpenCV intente abrir el diálogo de permisos en un thread secundario.
+        os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
         import cv2  # dependencia opcional: pip install -e ".[gestures]"
         import numpy as np  # noqa: F401 — usado en _detect_face / _analyze_objects_groq
         cap = cv2.VideoCapture(self.cfg.camera_index)
@@ -150,13 +155,36 @@ class CameraContextAnalyzer:
     def _init_face_detector(self) -> None:
         try:
             import mediapipe as mp
-            self._mp_face = mp.solutions.face_detection.FaceDetection(
+            try:
+                mp_solutions = mp.solutions
+            except AttributeError:
+                raise ImportError("MediaPipe without solutions API")
+
+            self._mp_face = mp_solutions.face_detection.FaceDetection(
                 model_selection=0,            # modelo corta distancia (≤2m, más rápido)
                 min_detection_confidence=0.6,
             )
             log.info("MediaPipe Face Detection cargado")
         except Exception as e:
             log.warning("MediaPipe Face Detection no disponible: %s", e)
+            self._init_cv2_face_detector()
+
+    def _init_cv2_face_detector(self) -> None:
+        """Fallback: detector Haar de OpenCV cuando MediaPipe solutions no existe."""
+        try:
+            import cv2
+            cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+            if not cascade_path.exists():
+                log.warning("OpenCV cascade no encontrada para face detection")
+                return
+            self._face_cascade = cv2.CascadeClassifier(str(cascade_path))
+            if self._face_cascade.empty():
+                self._face_cascade = None
+                log.warning("OpenCV cascade cargada vacía")
+                return
+            log.info("OpenCV Haar Face Detection cargado (fallback)")
+        except Exception as e:
+            log.warning("OpenCV Haar Face Detection no disponible: %s", e)
 
     def _analyze_frame(self, frame: np.ndarray) -> None:
         present, looking = self._detect_face(frame)
@@ -182,7 +210,7 @@ class CameraContextAnalyzer:
         Heurística: face_width > 12% del frame, cx en [30%, 70%], cy < 65%.
         """
         if self._mp_face is None:
-            return False, False
+            return self._detect_face_cv2(frame)
 
         try:
             import cv2
@@ -210,6 +238,34 @@ class CameraContextAnalyzer:
 
         looking = face_w > 0.12 and 0.3 < cx < 0.7 and cy < 0.65
 
+        return True, looking
+
+    def _detect_face_cv2(self, frame: np.ndarray) -> tuple[bool, bool]:
+        """Fallback de detección facial con OpenCV Haar cascade."""
+        if self._face_cascade is None:
+            return False, False
+        try:
+            import cv2
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self._face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(60, 60),
+            )
+        except Exception as e:
+            log.debug("OpenCV face detection error: %s", e)
+            return False, False
+
+        if len(faces) == 0:
+            return False, False
+
+        h, w = frame.shape[:2]
+        x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        face_w = fw / max(1.0, w)
+        cx = (x + fw * 0.5) / max(1.0, w)
+        cy = (y + fh * 0.5) / max(1.0, h)
+        looking = face_w > 0.12 and 0.3 < cx < 0.7 and cy < 0.7
         return True, looking
 
     def _analyze_objects_groq(self, frame: np.ndarray) -> str:

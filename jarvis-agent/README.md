@@ -45,8 +45,20 @@ PYTHONPATH=src python -m jarvis --doctor-desktop
 ```bash
 cd /Users/luichi/Documents/Jarvis/jarvis-agent
 source .venv/bin/activate
-PYTHONPATH=src uvicorn jarvis.web.server:app --host 0.0.0.0 --port 8000
+PYTHONPATH=src python -m jarvis --web --port 8000
 ```
+
+Web endpoints:
+- `GET /` UI web (orb + chat glass)
+- `GET /health` estado backend
+- `POST /chat/stream` SSE modo general
+- `POST /chat/realtime/stream` SSE modo realtime (incluye `search_results`)
+- `GET /ws` WebSocket legado (compatibilidad)
+
+Notas de uso:
+- La UI mantiene `session_id` automáticamente para contexto.
+- TTS se envía en chunks (`audio_b64`) cuando está activo en el cliente.
+- En modo Realtime se muestra panel lateral con fuentes de búsqueda.
 
 ## Engines de voz (TTS)
 
@@ -55,7 +67,7 @@ Jarvis usa **Kokoro** como engine TTS por defecto — síntesis neural local, si
 | Engine | Calidad | Conexión | Latencia | Configuración |
 |--------|---------|----------|----------|---------------|
 | `kokoro` | ⭐⭐⭐⭐⭐ | Offline | ~150 ms | `TTS_ENGINE=kokoro` |
-| `elevenlabs` | ⭐⭐⭐⭐⭐ | Online | ~400 ms | Requiere API Key |
+| `piper` | ⭐⭐⭐ | Offline | ~250-600 ms | Requiere modelo local |
 | `macos` | ⭐⭐ | Offline | ~50 ms | Sin instalación |
 
 ### Instalar Kokoro
@@ -88,11 +100,6 @@ TTS_ENGINE=kokoro
 KOKORO_VOICE=ef_dora        # voz española femenina
 KOKORO_SPEED=1.0            # 0.5 (lento) – 2.0 (rápido)
 KOKORO_LANGUAGE=es          # "es" | "en-us" | "en-gb"
-
-# ElevenLabs (nube, mayor calidad)
-TTS_ENGINE=elevenlabs
-ELEVENLABS_API_KEY=tu-clave
-ELEVENLABS_VOICE_ID=tu-voice-id
 
 # macOS nativo (fallback, sin instalación)
 TTS_ENGINE=macos

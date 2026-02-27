@@ -31,6 +31,7 @@ class OverlayBridge:
         self._view = None
         self._particles = None
         self._pump_timer: Optional[AppKit.NSTimer] = None
+        self._state_name: str = "idle"
 
     # ------------------------------------------------------------------
     # Inicialización (hilo principal)
@@ -55,7 +56,13 @@ class OverlayBridge:
 
     def set_state(self, state: str) -> None:
         """Cambiar el estado visual del orb: idle | listening | thinking | acting."""
+        self._state_name = state
         self._q.put({"type": "state", "value": state})
+
+    @property
+    def state_name(self) -> str:
+        """Último estado solicitado del orb."""
+        return self._state_name
 
     def fly_to(self, x: float, y: float, callback: Optional[Callable] = None) -> None:
         """Animar partículas desde el orb hasta (x, y). Llama callback al terminar."""

@@ -267,9 +267,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         tts_cfg = TTSConfig(
             engine=settings.tts_engine,
-            elevenlabs_api_key=settings.elevenlabs_api_key,
-            elevenlabs_voice_id=settings.elevenlabs_voice_id,
-            elevenlabs_model=settings.elevenlabs_model,
+            kokoro_voice=settings.kokoro_voice,
+            kokoro_speed=settings.kokoro_speed,
+            kokoro_language=settings.kokoro_language,
         )
 
         voice_loop = VoiceLoop(
@@ -369,14 +369,14 @@ def _run_desktop(settings, paths) -> None:
     if getattr(settings, "use_gestures", False):
         from jarvis.vision.gesture_controller import build_gesture_controller
         _gesture_ctrl = build_gesture_controller(settings, daemon)
-        if _gesture_ctrl is not None:
-            _gesture_ctrl.start()
 
     # ── App delegate — definido DESPUÉS de todos los componentes ──────────────
     class _AppDelegate(AppKit.NSObject):
 
         def applicationDidFinishLaunching_(self, notification) -> None:
             daemon.start()
+            if _gesture_ctrl is not None:
+                _gesture_ctrl.start()
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
             """Clic en el acceso directo del escritorio → toggle del panel."""

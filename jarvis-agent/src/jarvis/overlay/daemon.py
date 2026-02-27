@@ -22,8 +22,10 @@ Ciclo:
 from __future__ import annotations
 
 import logging
+import os
 import queue as _queue
 import re
+import sys
 import threading
 import time
 import wave
@@ -348,8 +350,9 @@ class JarvisDaemon:
         # ── TTS
         self.tts = TTS(TTSConfig(
             engine=getattr(settings, "tts_engine", "macos"),
-            elevenlabs_api_key=getattr(settings, "elevenlabs_api_key", "") or None,
-            elevenlabs_voice_id=getattr(settings, "elevenlabs_voice_id", "") or None,
+            kokoro_voice=getattr(settings, "kokoro_voice", "ef_dora"),
+            kokoro_speed=getattr(settings, "kokoro_speed", 1.0),
+            kokoro_language=getattr(settings, "kokoro_language", "es"),
         ))
 
         # ── HUD (panel flotante de subtítulos)
@@ -434,6 +437,10 @@ class JarvisDaemon:
         """
         if not action:
             return
+        action = action.strip().lower()
+        # Evitar choques de audio: durante grabación/TTS solo permitimos "interrupt".
+        if action != "interrupt" and (self._is_recording or self.tts.is_speaking):
+            return
         self._trigger_queue.put(("gesture", action))
 
     def interrupt(self) -> None:
@@ -456,8 +463,6 @@ class JarvisDaemon:
 
     def start(self) -> None:
         self._running = True
-        if self._camera_ctx:
-            self._camera_ctx.start()
         self._main_thread = threading.Thread(
             target=self._run, name="jarvis-daemon", daemon=True
         )
@@ -488,6 +493,9 @@ class JarvisDaemon:
     def _run(self) -> None:
         self._request_accessibility()
         self._request_microphone_permission()
+        self._request_camera_permission()
+        if self._camera_ctx:
+            self._camera_ctx.start()
         self._setup_hotkey()
         self._wake_ok = self._start_wake_word()
 
@@ -527,6 +535,21 @@ class JarvisDaemon:
     def _handle_gesture_event(self, action: str) -> None:
         """Gestiona acciones de gesto encoladas desde GestureController."""
         action = (action or "").strip().lower()
+
+        def _has_pending_action() -> bool:
+            agent = getattr(self, "agent", None)
+            if agent is None:
+                return False
+            pending_attr = getattr(agent, "has_pending_confirmation", False)
+            if callable(pending_attr):
+                has_pending_confirmation = bool(pending_attr())
+            else:
+                has_pending_confirmation = bool(pending_attr)
+            has_pending_intent = bool(
+                getattr(getattr(agent, "intent_tracker", None), "is_pending", lambda: False)()
+            )
+            return has_pending_confirmation or has_pending_intent
+
         if action == "interrupt":
             self.interrupt()
             return
@@ -540,13 +563,16 @@ class JarvisDaemon:
             self.trigger_voice_input()
             return
         if action == "confirm":
-            self.submit_text("sí, confirmo")
+            if _has_pending_action():
+                self.submit_text("sí, confirmo")
             return
         if action == "yes":
-            self.submit_text("sí")
+            if _has_pending_action():
+                self.submit_text("sí")
             return
         if action == "no":
-            self.submit_text("no, cancela")
+            if _has_pending_action():
+                self.submit_text("no, cancela")
             return
 
         print(f"⚠️ Acción de gesto desconocida: {action}")
@@ -695,11 +721,10 @@ class JarvisDaemon:
                 return None
 
             if not voice_started or not frames:
-                if wait_timeout_s is not None:
-                    # En modo follow-up, silencio = usuario no quiso hablar → no grabar
-                    return None
                 print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f}, umbral={self._VAD_THRESHOLD})")
-                return self.stt.record_to_wav(out_path, seconds=5.0)
+                # No hacer fallback a grabación fija: el usuario pidió respuesta
+                # al terminar de hablar, no una ventana temporal rígida.
+                return None
 
             audio = np.concatenate(frames, axis=0)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -828,10 +853,9 @@ class JarvisDaemon:
                 return None
 
             if not voice_started or not frames:
-                if wait_timeout_s is not None:
-                    return None  # follow-up: silencio = el usuario no quiso hablar
                 print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f})")
-                return self.stt.record_to_wav(out_path, seconds=5.0)
+                # Sin voz detectada: volver a idle en lugar de grabación fija de 5s.
+                return None
 
             audio = np.concatenate(frames, axis=0)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1109,7 +1133,7 @@ class JarvisDaemon:
                 # Actualizar HUD con texto acumulado
                 hud_parts.append(sentence)
                 self._hud.show_text(" ".join(hud_parts))
-                if not self.bridge._state_name == "acting":  # type: ignore[attr-defined]
+                if self.bridge.state_name != "acting":
                     self.bridge.set_state("acting")
 
             def _llm_worker() -> None:
@@ -1230,6 +1254,45 @@ class JarvisDaemon:
             # AVFoundation no disponible o no necesario — ignorar silenciosamente
             print(f"ℹ️  Verificación de permiso de micrófono: {e}")
 
+    def _request_camera_permission(self) -> None:
+        """Verifica y solicita permiso de cámara en macOS (AVFoundation)."""
+        try:
+            import AVFoundation
+
+            # OpenCV debe evitar pedir permisos desde hilos secundarios.
+            os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
+
+            status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+                AVFoundation.AVMediaTypeVideo
+            )
+            # 0=notDetermined, 1=restricted, 2=denied, 3=authorized
+            if status == 3:
+                print("✅ Permiso de cámara: autorizado")
+                return
+            if status == 2:
+                print("❌ Permiso de cámara DENEGADO")
+                print("   Ve a: Ajustes del Sistema → Privacidad y Seguridad → Cámara")
+                print("   y activa el permiso para Terminal (o Python)")
+                return
+            if status == 0:
+                print("⏳ Solicitando permiso de cámara...")
+                done = threading.Event()
+
+                def _handler(granted):
+                    if granted:
+                        print("✅ Permiso de cámara concedido")
+                    else:
+                        print("❌ Permiso de cámara denegado por el usuario")
+                        print("   Actívalo en: Ajustes → Privacidad → Cámara → Terminal")
+                    done.set()
+
+                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVFoundation.AVMediaTypeVideo, _handler
+                )
+                done.wait(timeout=30)
+        except Exception as e:
+            print(f"ℹ️  Verificación de permiso de cámara: {e}")
+
     def _request_accessibility(self) -> None:
         try:
             from jarvis.overlay.dock import check_accessibility_permission
@@ -1271,6 +1334,11 @@ class JarvisDaemon:
     # ── Hotkey ────────────────────────────────────────────────────────────────
 
     def _setup_hotkey(self) -> None:
+        hotkey_enabled = os.getenv("JARVIS_ENABLE_PYNPUT_HOTKEY", "").strip().lower()
+        if sys.platform == "darwin" and hotkey_enabled not in {"1", "true", "yes", "on"}:
+            print("⌨️  Hotkey desactivada en macOS (pynput inestable en este sistema).")
+            print(f"   Usa wake word o activa JARVIS_ENABLE_PYNPUT_HOTKEY=1 para forzar {self.HOTKEY}.")
+            return
         try:
             from pynput import keyboard
 

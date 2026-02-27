@@ -279,8 +279,9 @@ class JarvisDaemon:
         # ── TTS
         self.tts = TTS(TTSConfig(
             engine=getattr(settings, "tts_engine", "macos"),
-            elevenlabs_api_key=getattr(settings, "elevenlabs_api_key", "") or None,
-            elevenlabs_voice_id=getattr(settings, "elevenlabs_voice_id", "") or None,
+            kokoro_voice=getattr(settings, "kokoro_voice", "ef_dora"),
+            kokoro_speed=getattr(settings, "kokoro_speed", 1.0),
+            kokoro_language=getattr(settings, "kokoro_language", "es"),
         ))
 
         # ── HUD (panel flotante de subtítulos)

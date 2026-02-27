@@ -31,10 +31,13 @@ Uso típico:
 from __future__ import annotations
 
 import math
+import os
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
 # ---------------------------------------------------------------------------
@@ -244,6 +247,7 @@ class GestureController:
         self._paused            = False            # estado pause/resume
         self._last_trigger_time = 0.0              # monotonic, último gesto disparado
         self._stable: dict[str, int] = {}          # gesture_name → frames consecutivos
+        self._mp_hands_task = None
 
     # ── API pública ──────────────────────────────────────────────────────────
 
@@ -277,6 +281,18 @@ class GestureController:
 
     def _loop(self) -> None:
         """Bucle de captura + detección. Corre en el thread daemon."""
+        # Evita que OpenCV intente gestionar permisos de cámara desde este thread.
+        os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
+        debug_window = bool(self.cfg.debug)
+        if debug_window and sys.platform == "darwin":
+            # En macOS, HighGUI (imshow/waitKey) desde threads secundarios puede
+            # terminar en "trace trap". Mantenemos detección activa sin ventana.
+            debug_window = False
+            print(
+                "[GestureController] debug window desactivada en macOS "
+                "(evita crash de OpenCV/HighGUI en thread)."
+            )
+
         # Importaciones tardías: si no están disponibles, el módulo carga igual
         try:
             import cv2
@@ -295,8 +311,17 @@ class GestureController:
             )
             return
 
-        mp_hands = mp.solutions.hands
-        mp_draw  = mp.solutions.drawing_utils
+        mp_solutions = getattr(mp, "solutions", None)
+        use_tasks_backend = mp_solutions is None
+        mp_hands = None
+        mp_draw = None
+        if not use_tasks_backend:
+            mp_hands = mp_solutions.hands
+            mp_draw = mp_solutions.drawing_utils
+        else:
+            if not self._init_tasks_hand_landmarker(mp):
+                print("[GestureController] MediaPipe sin backend de manos utilizable.")
+                return
 
         cap = cv2.VideoCapture(self.cfg.camera_index)
         if not cap.isOpened():
@@ -311,12 +336,14 @@ class GestureController:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        hands = mp_hands.Hands(
-            model_complexity=0,  # modelo ligero
-            min_detection_confidence=self.cfg.min_detection_confidence,
-            min_tracking_confidence=self.cfg.min_tracking_confidence,
-            max_num_hands=1,
-        )
+        hands = None
+        if not use_tasks_backend:
+            hands = mp_hands.Hands(
+                model_complexity=0,  # modelo ligero
+                min_detection_confidence=self.cfg.min_detection_confidence,
+                min_tracking_confidence=self.cfg.min_tracking_confidence,
+                max_num_hands=1,
+            )
 
         frame_skip = 0  # procesar un frame de cada dos
         try:
@@ -331,28 +358,29 @@ class GestureController:
                 if frame_skip:
                     continue
 
-                # BGR → RGB para MediaPipe
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_rgb.flags.writeable = False
-                results = hands.process(frame_rgb)
-                frame_rgb.flags.writeable = True
-
                 current_gesture: Optional[GestureEvent] = None
+                if use_tasks_backend:
+                    current_gesture = self._detect_with_tasks_backend(mp, frame)
+                else:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame_rgb.flags.writeable = False
+                    results = hands.process(frame_rgb)
+                    frame_rgb.flags.writeable = True
 
-                if results.multi_hand_landmarks and results.multi_handedness:
-                    for hand_lm, hand_info in zip(
-                        results.multi_hand_landmarks,
-                        results.multi_handedness,
-                    ):
-                        handedness_label = hand_info.classification[0].label
-                        current_gesture = detect_gesture(
-                            hand_lm.landmark, handedness_label
-                        )
-
-                        if self.cfg.debug:
-                            mp_draw.draw_landmarks(
-                                frame, hand_lm, mp_hands.HAND_CONNECTIONS
+                    if results.multi_hand_landmarks and results.multi_handedness:
+                        for hand_lm, hand_info in zip(
+                            results.multi_hand_landmarks,
+                            results.multi_handedness,
+                        ):
+                            handedness_label = hand_info.classification[0].label
+                            current_gesture = detect_gesture(
+                                hand_lm.landmark, handedness_label
                             )
+
+                            if self.cfg.debug:
+                                mp_draw.draw_landmarks(
+                                    frame, hand_lm, mp_hands.HAND_CONNECTIONS
+                                )
 
                 # ── Estabilidad: exigir N frames consecutivos ────────────────
                 self._update_stable(current_gesture)
@@ -360,18 +388,86 @@ class GestureController:
                 # ── Visualización debug ──────────────────────────────────────
                 if self.cfg.debug:
                     self._draw_debug(frame, current_gesture)
-                    cv2.imshow("JARVIS — Gestures", frame)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
+                    if debug_window:
+                        cv2.imshow("JARVIS — Gestures", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
 
         finally:
-            hands.close()
+            if hands is not None:
+                hands.close()
             cap.release()
-            if self.cfg.debug:
+            if debug_window:
                 try:
                     cv2.destroyAllWindows()
                 except Exception:
                     pass
+
+    def _init_tasks_hand_landmarker(self, mp: Any) -> bool:
+        """Inicializa MediaPipe Tasks HandLandmarker para builds sin mp.solutions."""
+        try:
+            from mediapipe.tasks import python as mp_python  # type: ignore[import]
+            from mediapipe.tasks.python import vision  # type: ignore[import]
+            model_path = self._ensure_hand_model_path()
+            base_opts = mp_python.BaseOptions(model_asset_path=model_path)
+            opts = vision.HandLandmarkerOptions(
+                base_options=base_opts,
+                num_hands=1,
+                min_hand_detection_confidence=self.cfg.min_detection_confidence,
+                min_hand_presence_confidence=self.cfg.min_tracking_confidence,
+                min_tracking_confidence=self.cfg.min_tracking_confidence,
+            )
+            self._mp_hands_task = vision.HandLandmarker.create_from_options(opts)
+            print("[GestureController] MediaPipe Tasks HandLandmarker cargado.")
+            return True
+        except Exception as e:
+            print(f"[GestureController] Tasks HandLandmarker no disponible: {e}")
+            self._mp_hands_task = None
+            return False
+
+    def _ensure_hand_model_path(self) -> str:
+        model_dir = Path.home() / "Documents" / "Jarvis" / "models" / "mediapipe"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_path = model_dir / "hand_landmarker.task"
+        if model_path.exists() and model_path.stat().st_size > 1024 * 1024:
+            return str(model_path)
+
+        import requests
+        url = (
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+            "hand_landmarker/float16/1/hand_landmarker.task"
+        )
+        tmp = model_path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        with requests.get(url, stream=True, timeout=120) as resp:
+            resp.raise_for_status()
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+        if tmp.stat().st_size < 1024 * 1024:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("Modelo hand_landmarker.task descargado incompleto")
+        tmp.rename(model_path)
+        return str(model_path)
+
+    def _detect_with_tasks_backend(self, mp: Any, frame: Any) -> Optional[GestureEvent]:
+        if self._mp_hands_task is None:
+            return None
+        try:
+            import cv2
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            res = self._mp_hands_task.detect(mp_image)
+            if not getattr(res, "hand_landmarks", None):
+                return None
+            lms = res.hand_landmarks[0]
+            handedness = "Right"
+            if getattr(res, "handedness", None) and res.handedness[0]:
+                handedness = getattr(res.handedness[0][0], "category_name", "Right")
+            return detect_gesture(lms, handedness)
+        except Exception:
+            return None
 
     def _update_stable(self, gesture: Optional[GestureEvent]) -> None:
         """

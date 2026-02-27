@@ -2,7 +2,7 @@
 tts.py
 
 Text-to-Speech con múltiples engines:
-- ElevenLabs (voz personalizada de alta calidad)
+- Kokoro (voz neural local)
 - Piper (voz neural local)
 - macOS 'say' (fallback)
 """
@@ -227,14 +227,10 @@ class _KokoroEngine:
 
 @dataclass
 class TTSConfig:
-    engine: str = "kokoro"  # kokoro, elevenlabs, piper, macos
+    engine: str = "kokoro"  # kokoro, piper, macos
     voice_model: Optional[str] = None  # Piper: ruta al .onnx
     voice: Optional[str] = None       # macOS: nombre de voz
     rate: Optional[int] = None        # macOS: velocidad (palabras/min)
-    # ElevenLabs
-    elevenlabs_api_key: Optional[str] = None
-    elevenlabs_voice_id: Optional[str] = None
-    elevenlabs_model: str = "eleven_multilingual_v2"
     # Kokoro (TTS local, Apple Silicon)
     kokoro_voice: str = "ef_dora"      # Voces ES: ef_dora, em_alex, em_santa
     kokoro_speed: float = 1.0          # Velocidad de síntesis (0.5 – 2.0)
@@ -270,12 +266,6 @@ class TTS:
                 print("⚠️ Kokoro no disponible. Usando macOS 'say'.")
                 self.cfg.engine = "macos"
 
-        # ── ElevenLabs ────────────────────────────────────────────────────
-        if self.cfg.engine == "elevenlabs":
-            if not self.cfg.elevenlabs_api_key or not self.cfg.elevenlabs_voice_id:
-                print("⚠️ ElevenLabs no configurado. Intentando Piper...")
-                self.cfg.engine = "piper"
-
         # ── Piper ─────────────────────────────────────────────────────────
         if self.cfg.engine == "piper" and not self.cfg.voice_model:
             default_voice = Path("data/voices/es_ES-davefx-medium.onnx")
@@ -285,6 +275,10 @@ class TTS:
                 print("⚠️ Voz Piper no encontrada. Usando macOS 'say'")
                 self.cfg.engine = "macos"
 
+        if self.cfg.engine not in {"kokoro", "piper", "macos"}:
+            print(f"⚠️ Engine TTS no soportado ({self.cfg.engine}). Usando macOS 'say'.")
+            self.cfg.engine = "macos"
+
     def speak(self, text: str) -> dict:
         text = (text or "").strip()
         if not text:
@@ -292,8 +286,6 @@ class TTS:
 
         if self.cfg.engine == "kokoro" and self._kokoro is not None:
             return self._speak_kokoro(text)
-        elif self.cfg.engine == "elevenlabs":
-            return self._speak_elevenlabs(text)
         elif self.cfg.engine == "piper" and self.cfg.voice_model:
             return self._speak_piper(text)
         else:
@@ -345,64 +337,6 @@ class TTS:
                 _logger.warning("[Kokoro] Error reproduciendo audio: %s", exc)
 
         return {"command": "kokoro", "returncode": 0, "stdout": "", "stderr": ""}
-
-    def _speak_elevenlabs(self, text: str) -> dict:
-        """Habla usando ElevenLabs TTS (SDK v2.x)."""
-        try:
-            from elevenlabs.types import VoiceSettings
-            from elevenlabs.client import ElevenLabs
-
-            client = ElevenLabs(api_key=self.cfg.elevenlabs_api_key)
-
-            # Generar audio como stream de chunks MP3
-            audio_iter = client.text_to_speech.convert(
-                voice_id=self.cfg.elevenlabs_voice_id,
-                text=text,
-                model_id=self.cfg.elevenlabs_model,
-                output_format="mp3_44100_128",
-                voice_settings=VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.75,
-                    style=0.0,
-                    use_speaker_boost=True,
-                ),
-            )
-
-            # Escribir en archivo temporal y reproducir con afplay (interruptible)
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                mp3_path = f.name
-                for chunk in audio_iter:
-                    if self._stop_event.is_set():
-                        break
-                    f.write(chunk)
-
-            if self._stop_event.is_set():
-                Path(mp3_path).unlink(missing_ok=True)
-                return {"command": "elevenlabs", "returncode": 0, "stdout": "stopped", "stderr": ""}
-
-            proc = subprocess.Popen(
-                ["afplay", mp3_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._current_proc = proc
-            proc.wait()
-            self._current_proc = None
-            Path(mp3_path).unlink(missing_ok=True)
-
-            return {
-                "command": "elevenlabs → afplay",
-                "returncode": proc.returncode,
-                "stdout": "",
-                "stderr": "",
-            }
-
-        except ImportError:
-            print("⚠️ elevenlabs no instalado. Instala con: pip install elevenlabs")
-            return self._speak_macos(text)
-        except Exception as e:
-            print(f"⚠️ Error ElevenLabs: {e}. Usando fallback...")
-            return self._speak_macos(text)
 
     def _speak_piper(self, text: str) -> dict:
         """Habla usando Piper TTS."""
@@ -470,7 +404,7 @@ class TTS:
             except Exception:
                 pass
             self._current_proc = None
-        # Parar sounddevice (usado por ElevenLabs)
+        # Parar sounddevice (usado por Kokoro)
         try:
             import sounddevice as sd
             sd.stop()
@@ -493,42 +427,6 @@ class TTS:
         t = self._speech_thread
         return t is not None and t.is_alive()
 
-    # ── Prefetch + reproducción encadenada ───────────────────────────────────
-
-    def _fetch_elevenlabs_audio(self, text: str) -> Optional[str]:
-        """
-        Descarga audio ElevenLabs a un archivo temporal.
-        Retorna la ruta del MP3 o None si falla / fue interrumpido.
-        """
-        try:
-            from elevenlabs.types import VoiceSettings
-            from elevenlabs.client import ElevenLabs
-
-            client = ElevenLabs(api_key=self.cfg.elevenlabs_api_key)
-            audio_iter = client.text_to_speech.convert(
-                voice_id=self.cfg.elevenlabs_voice_id,
-                text=text,
-                model_id=self.cfg.elevenlabs_model,
-                output_format="mp3_44100_128",
-                voice_settings=VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.75,
-                    style=0.0,
-                    use_speaker_boost=True,
-                ),
-            )
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                mp3_path = f.name
-                for chunk in audio_iter:
-                    if self._stop_event.is_set():
-                        Path(mp3_path).unlink(missing_ok=True)
-                        return None
-                    f.write(chunk)
-            return mp3_path
-        except Exception as e:
-            print(f"⚠️ ElevenLabs prefetch error: {e}")
-            return None
-
     def speak_all(
         self,
         sentences: List[str],
@@ -536,9 +434,7 @@ class TTS:
         interrupt_event: Optional[threading.Event] = None,
     ) -> None:
         """
-        Habla una lista de frases minimizando los huecos entre ellas.
-        Para ElevenLabs: pre-descarga la siguiente frase mientras reproduce la actual.
-        Para otros motores: habla secuencialmente.
+        Habla una lista de frases en secuencia.
         Respeta _stop_event y el interrupt_event externo.
         """
         if not sentences:
@@ -551,67 +447,13 @@ class TTS:
                 return True
             return False
 
-        if self.cfg.engine != "elevenlabs":
-            for s in sentences:
-                if _interrupted():
-                    return
-                self._stop_event.clear()
-                self.speak(s)
-            return
-
-        # ── ElevenLabs: prefetch encadenado ──────────────────────────────────
-
-        def _fetch_async(text: str, result_q: _queue_mod.Queue) -> None:
-            result_q.put(self._fetch_elevenlabs_audio(text))
-
-        # Arrancar descarga del primer chunk inmediatamente
-        current_q: _queue_mod.Queue = _queue_mod.Queue(maxsize=1)
-        threading.Thread(
-            target=_fetch_async, args=(sentences[0], current_q), daemon=True
-        ).start()
-
-        for i, _sentence in enumerate(sentences):
+        for sentence in sentences:
             if _interrupted():
                 return
-
-            # Arrancar descarga del siguiente chunk antes de que acabe el actual
-            next_q: Optional[_queue_mod.Queue] = None
-            if i + 1 < len(sentences) and not _interrupted():
-                next_q = _queue_mod.Queue(maxsize=1)
-                threading.Thread(
-                    target=_fetch_async, args=(sentences[i + 1], next_q), daemon=True
-                ).start()
-
-            # Esperar a que el audio del chunk actual esté listo
-            audio_path: Optional[str] = current_q.get()
-
-            if audio_path is None or _interrupted():
-                current_q = next_q  # type: ignore[assignment]
+            if not sentence.strip():
                 continue
-
-            # Reproducir con afplay
             self._stop_event.clear()
-            proc = subprocess.Popen(
-                ["afplay", audio_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._current_proc = proc
-
-            while proc.poll() is None:
-                if _interrupted():
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    break
-                time.sleep(0.05)
-
-            self._current_proc = None
-            Path(audio_path).unlink(missing_ok=True)
-
-            # Avanzar a la cola del siguiente chunk
-            current_q = next_q  # type: ignore[assignment]
+            self.speak(sentence)
 
     # ── API de streaming: consume frases desde una Queue ─────────────────────
 
@@ -628,8 +470,6 @@ class TTS:
           - str  → frase a reproducir
           - None → fin de stream (centinela)
 
-        Para ElevenLabs: pre-descarga la siguiente frase mientras reproduce la actual.
-        Para otros motores: reproducción secuencial.
         Llama on_first_audio() justo antes de reproducir el primer audio (métrica de latencia).
         Respeta _stop_event e interrupt_event.
         """
@@ -641,124 +481,23 @@ class TTS:
             return False
 
         first_played = False
-
-        if self.cfg.engine != "elevenlabs":
-            # Motor no-ElevenLabs: reproducción secuencial directa
-            while True:
-                if _interrupted():
-                    return
-                try:
-                    sentence = sentence_queue.get(timeout=0.1)
-                except _queue_mod.Empty:
-                    continue
-                if sentence is None:
-                    return  # fin de stream
-                if not sentence.strip():
-                    continue
-                if not first_played:
-                    first_played = True
-                    if on_first_audio:
-                        on_first_audio()
-                self._stop_event.clear()
-                self.speak(sentence)
-            return
-
-        # ── ElevenLabs: prefetch encadenado ──────────────────────────────────
-
-        def _fetch_async(text: str, result_q: "_queue_mod.Queue[Optional[str]]") -> None:
-            result_q.put(self._fetch_elevenlabs_audio(text))
-
-        # Cola donde iremos acumulando (sentence, audio_queue) pares
-        # Cargamos el primer item de sentence_queue y arrancamos su descarga
-        pending: List[tuple] = []  # List[(sentence_text, audio_result_queue)]
-
-        def _maybe_prefetch_next() -> None:
-            """Lee la siguiente frase disponible y arranca su descarga si no está ya pendiente."""
-            while len(pending) < 2:
-                try:
-                    sentence = sentence_queue.get_nowait()
-                except _queue_mod.Empty:
-                    break
-                if sentence is None:
-                    pending.append((None, None))  # marca de fin
-                    break
-                if not sentence.strip():
-                    continue
-                rq: "_queue_mod.Queue[Optional[str]]" = _queue_mod.Queue(maxsize=1)
-                threading.Thread(target=_fetch_async, args=(sentence, rq), daemon=True).start()
-                pending.append((sentence, rq))
-
-        # Arrancar primera descarga
-        _maybe_prefetch_next()
-
         while True:
             if _interrupted():
                 return
-
-            # Asegurarnos de tener al menos un item
-            if not pending:
-                # Esperar a que llegue algo
-                try:
-                    sentence = sentence_queue.get(timeout=0.1)
-                except _queue_mod.Empty:
-                    if _interrupted():
-                        return
-                    continue
-                if sentence is None:
-                    return  # fin de stream
-                if not sentence.strip():
-                    continue
-                rq = _queue_mod.Queue(maxsize=1)
-                threading.Thread(target=_fetch_async, args=(sentence, rq), daemon=True).start()
-                pending.append((sentence, rq))
-
-            sentence_text, audio_rq = pending.pop(0)
-
-            if sentence_text is None:
+            try:
+                sentence = sentence_queue.get(timeout=0.1)
+            except _queue_mod.Empty:
+                continue
+            if sentence is None:
                 return  # fin de stream
-
-            # Arrancar prefetch del siguiente mientras esperamos este audio
-            _maybe_prefetch_next()
-
-            # Esperar a que el audio esté listo
-            audio_path: Optional[str] = audio_rq.get()
-
-            if audio_path is None or _interrupted():
-                if audio_path:
-                    from pathlib import Path as _Path
-                    _Path(audio_path).unlink(missing_ok=True)
-                continue  # intentar siguiente
-
+            if not sentence.strip():
+                continue
             if not first_played:
                 first_played = True
                 if on_first_audio:
                     on_first_audio()
-
-            # Reproducir con afplay
             self._stop_event.clear()
-            proc = subprocess.Popen(
-                ["afplay", audio_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._current_proc = proc
-
-            while proc.poll() is None:
-                if _interrupted():
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    break
-                # Aprovechamos la reproducción para prefetch del siguiente
-                _maybe_prefetch_next()
-                time.sleep(0.05)
-
-            self._current_proc = None
-            Path(audio_path).unlink(missing_ok=True)
-
-            if _interrupted():
-                return
+            self.speak(sentence)
 
     def speak_streaming(
         self,

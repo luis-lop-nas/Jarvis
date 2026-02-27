@@ -79,11 +79,8 @@ class Settings(BaseSettings):
     stt_groq_model: str = Field(default="whisper-large-v3-turbo", alias="STT_GROQ_MODEL")
     stt_whisper_model: str = Field(default="small", alias="STT_WHISPER_MODEL")
 
-    # --- TTS (engine principal + ElevenLabs) ---
-    tts_engine: str = Field(default="kokoro", alias="TTS_ENGINE")  # kokoro, elevenlabs, piper, macos
-    elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
-    elevenlabs_voice_id: str = Field(default="", alias="ELEVENLABS_VOICE_ID")
-    elevenlabs_model: str = Field(default="eleven_multilingual_v2", alias="ELEVENLABS_MODEL")
+    # --- TTS (engine principal) ---
+    tts_engine: str = Field(default="kokoro", alias="TTS_ENGINE")  # kokoro, piper, macos
 
     # --- Kokoro TTS (local, Apple Silicon) ---
     kokoro_voice: str = Field(default="ef_dora", alias="KOKORO_VOICE")
@@ -110,6 +107,12 @@ class Settings(BaseSettings):
 
     # --- Paths ---
     data_dir: str = Field(default="data", alias="DATA_DIR")
+
+    # --- Web ---
+    web_sse_enabled: bool = Field(default=True, alias="WEB_SSE_ENABLED")
+    web_tts_default: bool = Field(default=True, alias="WEB_TTS_DEFAULT")
+    web_realtime_enabled: bool = Field(default=True, alias="WEB_REALTIME_ENABLED")
+    web_static_dir: str = Field(default="", alias="WEB_STATIC_DIR")
 
     # --- Confirm policy ---
     confirm_policy_enabled: bool = Field(default=True, alias="CONFIRM_POLICY_ENABLED")
