@@ -263,6 +263,9 @@ class VoiceLoop:
         """Loop principal."""
         try:
             self.wake.start()
+        except KeyboardInterrupt:
+            print("\n👋 Saliendo (inicio interrumpido)...")
+            return
         except Exception as e:
             print(f"⚠️ No se pudo iniciar wake word: {e}")
             print("   Revisa permisos de micrófono y WAKE_WORD_DEVICE en .env")

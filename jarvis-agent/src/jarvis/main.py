@@ -234,66 +234,69 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif args.voice:
         use_voice = True
 
-    if use_voice:
-        from jarvis.voice.voice_loop import VoiceLoop
-        from jarvis.voice.wake_word import WakeWordConfig
-        from jarvis.voice.stt import STTConfig
-        from jarvis.voice.tts import TTSConfig
-        from jarvis.agent.tool_agent import tool_agent_from_settings
-        from jarvis.memory.store import MemoryStore
+    try:
+        if use_voice:
+            from jarvis.voice.voice_loop import VoiceLoop
+            from jarvis.voice.wake_word import WakeWordConfig
+            from jarvis.voice.stt import STTConfig
+            from jarvis.voice.tts import TTSConfig
+            from jarvis.agent.tool_agent import tool_agent_from_settings
+            from jarvis.memory.store import MemoryStore
 
-        memory_store = MemoryStore(paths.db_path)
-        agent = tool_agent_from_settings(settings, memory_store=memory_store, paths=paths)
+            memory_store = MemoryStore(paths.db_path)
+            agent = tool_agent_from_settings(settings, memory_store=memory_store, paths=paths)
 
-        wake_cfg = WakeWordConfig(
-            engine=settings.wake_word_engine,
-            oww_model=settings.wake_word_model,
-            sensitivity=settings.wake_word_sensitivity,
-            device_index=settings.wake_word_device,
-            debug=settings.wake_word_debug,
-            oww_min_rms=settings.wake_word_min_rms,
-            oww_min_consecutive_hits=settings.wake_word_min_hits,
-            oww_activation_cooldown_sec=settings.wake_word_cooldown,
-            oww_score_ema_alpha=settings.wake_word_score_ema_alpha,
-            access_key=settings.porcupine_access_key,
-            keyword=settings.wake_word,
-        )
+            wake_cfg = WakeWordConfig(
+                engine=settings.wake_word_engine,
+                oww_model=settings.wake_word_model,
+                sensitivity=settings.wake_word_sensitivity,
+                device_index=settings.wake_word_device,
+                debug=settings.wake_word_debug,
+                oww_min_rms=settings.wake_word_min_rms,
+                oww_min_consecutive_hits=settings.wake_word_min_hits,
+                oww_activation_cooldown_sec=settings.wake_word_cooldown,
+                oww_score_ema_alpha=settings.wake_word_score_ema_alpha,
+                access_key=settings.porcupine_access_key,
+                keyword=settings.wake_word,
+            )
 
-        stt_cfg = STTConfig(
-            engine=settings.stt_engine,
-            groq_api_key=settings.groq_api_key,
-            groq_model=settings.stt_groq_model,
-            whisper_model=settings.stt_whisper_model,
-        )
-        tts_cfg = TTSConfig(
-            engine=settings.tts_engine,
-            kokoro_voice=settings.kokoro_voice,
-            kokoro_speed=settings.kokoro_speed,
-            kokoro_language=settings.kokoro_language,
-        )
+            stt_cfg = STTConfig(
+                engine=settings.stt_engine,
+                groq_api_key=settings.groq_api_key,
+                groq_model=settings.stt_groq_model,
+                whisper_model=settings.stt_whisper_model,
+            )
+            tts_cfg = TTSConfig(
+                engine=settings.tts_engine,
+                kokoro_voice=settings.kokoro_voice,
+                kokoro_speed=settings.kokoro_speed,
+                kokoro_language=settings.kokoro_language,
+            )
 
-        voice_loop = VoiceLoop(
-            wake_cfg=wake_cfg,
-            stt_cfg=stt_cfg,
-            tts_cfg=tts_cfg,
-        )
+            voice_loop = VoiceLoop(
+                wake_cfg=wake_cfg,
+                stt_cfg=stt_cfg,
+                tts_cfg=tts_cfg,
+            )
 
-        print("🎤 Modo voz activado. Di 'Jarvis' para activar...")
-        print("Presiona Ctrl+C para salir.\n")
+            print("🎤 Modo voz activado. Di 'Jarvis' para activar...")
+            print("Presiona Ctrl+C para salir.\n")
 
-        def agent_fn(text: str) -> str:
-            txt = (text or "").strip().lower()
-            if "buenos días" in txt or "buenos dias" in txt:
-                from jarvis.intents.good_morning import run_morning_briefing
+            def agent_fn(text: str) -> str:
+                txt = (text or "").strip().lower()
+                if "buenos días" in txt or "buenos dias" in txt:
+                    from jarvis.intents.good_morning import run_morning_briefing
 
-                return run_morning_briefing().text
-            return agent.run(text)
+                    return run_morning_briefing().text
+                return agent.run(text)
 
-        voice_loop.run_forever(agent_fn)
-    else:
-        # Modo CLI
-        from jarvis.ui.cli import run_cli
-        run_cli(settings=settings, paths=paths)
+            voice_loop.run_forever(agent_fn)
+        else:
+            # Modo CLI
+            from jarvis.ui.cli import run_cli
+            run_cli(settings=settings, paths=paths)
+    except KeyboardInterrupt:
+        print("\n👋 Hasta luego!")
 
     return 0
 

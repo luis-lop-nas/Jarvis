@@ -68,8 +68,12 @@ def run_cli(settings: Any, paths: Any) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_file = log_dir / f"session_{timestamp}.log"
     
-    print_welcome()
-    
+    try:
+        print_welcome()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Saliendo...[/yellow]")
+        return
+
     try:
         while True:
             try:
