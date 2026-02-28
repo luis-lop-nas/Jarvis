@@ -383,6 +383,16 @@ def _run_desktop(settings, paths) -> None:
         from jarvis.vision.gesture_controller import build_gesture_controller
         _gesture_ctrl = build_gesture_controller(settings, daemon)
 
+    # ── Vision Monitor (ventana de debug de cámara) ────────────────────────────
+    _vision_monitor = None
+    try:
+        from jarvis.overlay.vision_monitor import VisionMonitor
+        _vision_monitor = VisionMonitor(
+            camera_index=getattr(settings, "gesture_camera_index", 0)
+        )
+    except Exception as _e:
+        print(f"⚠️ Vision Monitor no disponible: {_e}")
+
     # ── App delegate — definido DESPUÉS de todos los componentes ──────────────
     class _AppDelegate(AppKit.NSObject):
 
@@ -390,6 +400,11 @@ def _run_desktop(settings, paths) -> None:
             daemon.start()
             if _gesture_ctrl is not None:
                 _gesture_ctrl.start()
+            if _vision_monitor is not None:
+                _vision_monitor.start(
+                    gesture_ctrl=_gesture_ctrl,
+                    camera_ctx=daemon._camera_ctx,
+                )
 
         def applicationShouldHandleReopen_hasVisibleWindows_(self, sender, flag) -> bool:
             """Clic en el acceso directo del escritorio → toggle del panel."""
@@ -410,6 +425,8 @@ def _run_desktop(settings, paths) -> None:
     daemon.stop()
     if _gesture_ctrl is not None:
         _gesture_ctrl.stop()
+    if _vision_monitor is not None:
+        _vision_monitor.stop()
 
 
 if __name__ == "__main__":
