@@ -79,3 +79,11 @@ Icon?
 .idea/
 *.swp
 *.swo
+
+# =========================
+# Modelos ML (demasiado grandes para git)
+# =========================
+models/
+*.onnx
+*.task
+*.tflite
