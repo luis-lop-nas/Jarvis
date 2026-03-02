@@ -30,6 +30,7 @@ class OverlayBridge:
         self._q: queue.Queue[dict] = queue.Queue()
         self._view = None
         self._particles = None
+        self._notch = None
         self._pump_timer: Optional[AppKit.NSTimer] = None
         self._state_name: str = "idle"
 
@@ -44,6 +45,10 @@ class OverlayBridge:
         """
         self._view = view
         self._particles = particles
+
+    def attach_notch(self, notch) -> None:
+        """Conectar el NotchPanel para recibir state y audio_level."""
+        self._notch = notch
 
         # Timer que vacía la cola cada 50ms en el hilo principal
         self._pump_timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -95,8 +100,11 @@ class OverlayBridge:
     def _dispatch(self, event: dict) -> None:
         t = event["type"]
 
-        if t == "state" and self._view is not None:
-            self._view.set_state(event["value"])
+        if t == "state":
+            if self._view is not None:
+                self._view.set_state(event["value"])
+            if self._notch is not None:
+                self._notch.set_state(event["value"])
 
         elif t == "move" and self._view is not None:
             self._view.set_position(event["x"], event["y"])
@@ -107,8 +115,11 @@ class OverlayBridge:
             elif event.get("callback"):
                 threading.Thread(target=event["callback"], daemon=True).start()
 
-        elif t == "audio_level" and self._view is not None:
-            self._view.set_audio_level(event["value"])
+        elif t == "audio_level":
+            if self._view is not None:
+                self._view.set_audio_level(event["value"])
+            if self._notch is not None:
+                self._notch.set_audio_level(event["value"])
 
         elif t == "_fn":
             try:

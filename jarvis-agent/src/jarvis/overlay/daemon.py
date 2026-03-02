@@ -75,7 +75,7 @@ class _SileroVAD:
         outs = self._sess.run(None, {
             "input": x,
             "state": self._state,
-            "sr":    np.array(sr, dtype=np.int64),
+            "sr":    np.array(sr, dtype=np.int64)
         })
         # outs[0] = output (1,1), outs[1] = stateN actualizado
         self._state = outs[1]
@@ -348,9 +348,10 @@ class JarvisDaemon:
 
         # ── TTS
         self.tts = TTS(TTSConfig(
-            engine=getattr(settings, "tts_engine", "macos"),
-            elevenlabs_api_key=getattr(settings, "elevenlabs_api_key", "") or None,
-            elevenlabs_voice_id=getattr(settings, "elevenlabs_voice_id", "") or None,
+            engine=getattr(settings, "tts_engine", "kokoro"),
+            kokoro_voice=getattr(settings, "kokoro_voice", "ef_dora"),
+            kokoro_speed=getattr(settings, "kokoro_speed", 1.0),
+            kokoro_language=getattr(settings, "kokoro_language", "es"),
         ))
 
         # ── HUD (panel flotante de subtítulos)

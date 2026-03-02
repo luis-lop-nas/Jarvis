@@ -338,9 +338,10 @@ def _run_desktop(settings, paths) -> None:
     frame  = screen.frame()
     sw, sh = frame.size.width, frame.size.height
 
-    # ── Overlay visual ────────────────────────────────────────────────────────
+    # ── Overlay visual (oculto — Jarvis vive en el notch) ─────────────────────
     view      = JarvisView.alloc().initWithFrame_(frame)
     _window   = JarvisWindow(view)
+    _window.win.orderOut_(None)   # esconder el orb de abajo-izquierda
 
     particles = ParticleSystem(view)
     view.attach_particles(particles)
@@ -366,6 +367,11 @@ def _run_desktop(settings, paths) -> None:
 
     # Conectar panel al menú de la barra de menú
     _menubar.set_main_panel(_main_panel)
+
+    # ── Notch digital (visualizador principal) ────────────────────────────────
+    from jarvis.overlay.notch_panel import NotchPanel
+    _notch_panel = NotchPanel()
+    bridge.attach_notch(_notch_panel)
 
     # ── Annotation overlay (opcional — solo si está habilitado en config) ────
     _ann_overlay = None

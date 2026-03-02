@@ -256,6 +256,26 @@ class GestureController:
         if not self.cfg.enabled:
             print("[GestureController] Desactivado en config (use_gestures=False)")
             return
+
+        # Verificación en el hilo principal (obligatorio en Apple Silicon):
+        # importar mediapipe AQUÍ evita que la inicialización Metal/TFLite ocurra
+        # desde un thread daemon, lo cual causa SIGTRAP en macOS ARM.
+        try:
+            import mediapipe as _mp_check
+        except ImportError:
+            print(
+                "[GestureController] MediaPipe no instalado. "
+                "Gestos desactivados. Instala con: pip install 'mediapipe<0.10'"
+            )
+            return
+
+        if not hasattr(_mp_check, "solutions"):
+            print(
+                "[GestureController] MediaPipe ≥0.10 detectado (sin mp.solutions). "
+                "Gestos desactivados. Instala mediapipe<0.10 para activarlos."
+            )
+            return
+
         self._running = True
         self._thread = threading.Thread(
             target=self._loop,
@@ -269,8 +289,10 @@ class GestureController:
         )
 
     def stop(self) -> None:
-        """Detiene el hilo de detección."""
+        """Detiene el hilo de detección y espera a que cierre limpiamente."""
         self._running = False
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
     @property
     def is_paused(self) -> bool:
@@ -312,16 +334,19 @@ class GestureController:
             return
 
         mp_solutions = getattr(mp, "solutions", None)
-        use_tasks_backend = mp_solutions is None
-        mp_hands = None
-        mp_draw = None
-        if not use_tasks_backend:
-            mp_hands = mp_solutions.hands
-            mp_draw = mp_solutions.drawing_utils
-        else:
-            if not self._init_tasks_hand_landmarker(mp):
-                print("[GestureController] MediaPipe sin backend de manos utilizable.")
-                return
+        if mp_solutions is None:
+            # MediaPipe 0.10+ eliminó mp.solutions. El Tasks backend alternativo
+            # (HandLandmarker) causa SIGTRAP en Apple Silicon desde threads daemon.
+            # Desactivamos gestos graciosamente hasta migrar a la nueva API.
+            print(
+                "[GestureController] MediaPipe sin API 'solutions' (versión ≥0.10). "
+                "Gestos desactivados. Instala mediapipe<0.10 para activarlos."
+            )
+            return
+
+        use_tasks_backend = False
+        mp_hands = mp_solutions.hands
+        mp_draw = mp_solutions.drawing_utils
 
         cap = cv2.VideoCapture(self.cfg.camera_index)
         if not cap.isOpened():
