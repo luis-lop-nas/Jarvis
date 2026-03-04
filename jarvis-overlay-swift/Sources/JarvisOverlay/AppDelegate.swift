@@ -1,18 +1,19 @@
 import AppKit
 import MetalKit
 
+// MARK: - AppDelegate ─────────────────────────────────────────────────────────
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    // MARK: - UI components
     private var window:     NSWindow!
     private var metalView:  MTKView!
     private var renderer:   Renderer!
-    private var cycleTimer: Timer?
+    private var notchView:  NotchAnimationView!
 
-    // Phase-1 demo: auto-cycle states to show all 4 palettes
-    private let statesCycle = ["idle", "listening", "thinking", "acting"]
-    private var stateIdx    = 0
+    // MARK: - IPC
+    private var ipcServer: IPCServer!
 
-    // MARK: - Launch
+    // MARK: - Launch ───────────────────────────────────────────────────────────
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = NSScreen.main else { fatalError("no main screen") }
@@ -20,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let frame = screen.frame
 
-        // ── Transparent always-on-top window ──────────────────────────────────
+        // ── Transparent always-on-top overlay window ──────────────────────────
         window = NSWindow(
             contentRect: frame,
             styleMask:   [.borderless],
@@ -32,40 +33,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque           = false
         window.hasShadow          = false
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        window.ignoresMouseEvents = true
+        window.ignoresMouseEvents = true   // click-through for the whole overlay
 
-        // ── MTKView (transparent Metal surface) ───────────────────────────────
-        metalView = MTKView(frame: frame, device: gpu)
-        metalView.colorPixelFormat         = .bgra8Unorm
-        metalView.clearColor               = MTLClearColorMake(0, 0, 0, 0)
-        metalView.preferredFramesPerSecond = 60
-        metalView.isPaused                 = false
-        metalView.enableSetNeedsDisplay    = false
-
+        // ── Metal particle view (fills entire screen) ─────────────────────────
+        metalView                             = MTKView(frame: frame, device: gpu)
+        metalView.colorPixelFormat            = .bgra8Unorm
+        metalView.clearColor                  = MTLClearColorMake(0, 0, 0, 0)
+        metalView.preferredFramesPerSecond    = 60
+        metalView.isPaused                    = false
+        metalView.enableSetNeedsDisplay       = false
         if let ml = metalView.layer as? CAMetalLayer { ml.isOpaque = false }
 
-        // ── Renderer ──────────────────────────────────────────────────────────
-        renderer          = Renderer(device: gpu, logicalSize: frame.size)
+        renderer           = Renderer(device: gpu, logicalSize: frame.size)
         metalView.delegate = renderer
 
         window.contentView = metalView
+
+        // ── Notch animation view (sits on top of the Metal surface) ───────────
+        notchView = NotchAnimationView(screen: screen)
+        metalView.addSubview(notchView)
+
         window.makeKeyAndOrderFront(nil)
 
-        print("● JarvisOverlay  Phase 1 — Metal particle cloud")
-        print("  Screen: \(Int(frame.width))×\(Int(frame.height))  @60fps")
-        print("  States cycle every 3 s.  Cmd-Q / Ctrl-C to quit.\n")
+        print("● JarvisOverlay Phase 2")
+        print("  Screen: \(Int(frame.width))×\(Int(frame.height))  Metal@60fps")
+        print("  Notch: ready")
 
-        // Cycle all 4 palettes every 3 s
-        cycleTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.stateIdx = (self.stateIdx + 1) % self.statesCycle.count
-            let s = self.statesCycle[self.stateIdx]
-            self.renderer.particles.setState(s)
-            print("  → \(s)")
-        }
+        // ── IPC server ────────────────────────────────────────────────────────
+        ipcServer          = IPCServer()
+        ipcServer.delegate = self
+        ipcServer.start()
+
+        print("  IPC: ready — waiting for Python daemon\n")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        cycleTimer?.invalidate()
+        ipcServer?.stop()
     }
 }
+
+// MARK: - IPCServerDelegate ───────────────────────────────────────────────────
+extension AppDelegate: IPCServerDelegate {
+
+    func ipcServer(_ server: IPCServer, didReceiveCommand command: String,
+                   payload: [String: Any])
+    {
+        // All UI mutations happen here on the main thread (guaranteed by IPCServer)
+        switch command {
+
+        // ── Particle cloud + notch state ─────────────────────────────────────
+        case "set_state":
+            guard let rawState = payload["state"] as? String else { return }
+            let amplitude = (payload["amplitude"] as? Double).map { Float($0) } ?? 0.5
+
+            // Particle system accepts "idle/listening/thinking/acting/error"
+            renderer.particles.setState(rawState)
+
+            // Notch maps "acting" → .speaking and handles "speaking" directly
+            let notchState = NotchState.fromParticleState(rawState)
+            notchView.setState(notchState, amplitude: amplitude)
+
+        // ── Notch-only commands (Python bridge notch_* methods) ──────────────
+        case "notch_state":
+            let rawState  = payload["state"]     as? String ?? "idle"
+            let amplitude = (payload["amplitude"] as? Double).map { Float($0) } ?? 0.5
+            if let state  = NotchState(rawValue: rawState) {
+                notchView.setState(state, amplitude: amplitude)
+            }
+
+        case "notch_alert":
+            let msg = payload["message"] as? String ?? ""
+            notchView.triggerAlert(message: msg)
+
+        // ── Audio level (expands particle cloud + wave amplitude) ─────────────
+        case "set_audio_level":
+            if let level = payload["level"] as? Double {
+                renderer.particles.setAudioLevel(Float(level))
+                // Also push amplitude to notch if currently in a wave state
+                if [NotchState.listening, .speaking].contains(notchView.currentState) {
+                    notchView.setState(notchView.currentState, amplitude: Float(level))
+                }
+            }
+
+        // ── Particle cloud position ───────────────────────────────────────────
+        case "fly_to":
+            if let x = payload["x"] as? Double, let y = payload["y"] as? Double {
+                renderer.particles.centerX = Float(x)
+                renderer.particles.centerY = Float(y)
+            }
+
+        case "return_home":
+            let c = renderer.particles
+            c.centerX = Float(window.frame.width  / 2)
+            c.centerY = Float(window.frame.height / 2)
+
+        // ── HUD (stub — extend when HUD view is added) ────────────────────────
+        case "say", "hide_hud", "wrap_window":
+            // Future: route to HUD view
+            print("[AppDelegate] Stub: \(command)")
+
+        default:
+            print("[AppDelegate] Unknown command: \(command)")
+        }
+    }
+}
+

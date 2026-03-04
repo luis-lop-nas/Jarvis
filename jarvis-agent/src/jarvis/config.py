@@ -109,9 +109,10 @@ class Settings(BaseSettings):
     camera_context_face_only: bool   = Field(default=False, alias="CAMERA_CONTEXT_FACE_ONLY")
 
     # --- Gaze trigger (activar escucha cuando el usuario mira la cámara y habla) ---
-    gaze_trigger_enabled: bool  = Field(default=False, alias="GAZE_TRIGGER_ENABLED")
+    gaze_trigger_enabled: bool        = Field(default=False, alias="GAZE_TRIGGER_ENABLED")
     gaze_trigger_rms_threshold: float = Field(default=400.0, alias="GAZE_TRIGGER_RMS_THRESHOLD")
     gaze_trigger_cooldown: float      = Field(default=3.0,   alias="GAZE_TRIGGER_COOLDOWN")
+    gaze_debug: bool                  = Field(default=False, alias="GAZE_DEBUG")
 
     # --- Screen context (análisis periódico de pantalla) ---
     screen_context_enabled: bool     = Field(default=False, alias="SCREEN_CONTEXT")

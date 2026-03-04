@@ -6,6 +6,7 @@ Loop de voz con conversación continua usando Silero VAD.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ import sounddevice as sd
 from jarvis.voice.wake_word import WakeWordConfig, WakeWordListener
 from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
+from jarvis.voice.gaze_trigger import GazeTriggerConfig, GazeTriggerMonitor
 
 
 AgentFn = Callable[[str], str]
@@ -39,6 +41,7 @@ class VoiceLoop:
         stt_cfg: Optional[STTConfig] = None,
         tts_cfg: Optional[TTSConfig] = None,
         loop_cfg: Optional[VoiceLoopConfig] = None,
+        gaze_cfg: Optional[GazeTriggerConfig] = None,
     ):
         self.loop_cfg = loop_cfg or VoiceLoopConfig()
         self.workspace = Path(self.loop_cfg.workspace_dir).expanduser().resolve()
@@ -47,6 +50,16 @@ class VoiceLoop:
         self.wake = WakeWordListener(wake_cfg)
         self.stt = STT(stt_cfg or STTConfig())
         self.tts = TTS(tts_cfg or TTSConfig())
+
+        # ── Gaze trigger (opcional) ──────────────────────────────────────────
+        self._gaze_event: threading.Event = threading.Event()
+        self._gaze_monitor: Optional[GazeTriggerMonitor] = None
+        if gaze_cfg and gaze_cfg.enabled:
+            self._gaze_monitor = GazeTriggerMonitor(
+                config=gaze_cfg,
+                wake_listener=self.wake,
+                on_trigger=self._gaze_event.set,  # señaliza el loop principal
+            )
         
         self.vad_model = None
         self._torch = None
@@ -259,6 +272,58 @@ class VoiceLoop:
             self.tts.speak(response)
             print("─" * 60)
 
+    def _play_gaze_beep(self) -> None:
+        """Pitido corto de confirmación para gaze trigger (sin TTS — el usuario ya habla)."""
+        try:
+            t    = np.linspace(0, 0.07, int(22050 * 0.07), endpoint=False)
+            beep = (0.22 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+            sd.play(beep, 22050, blocking=False)
+        except Exception:
+            pass  # el beep es opcional
+
+    def _wait_for_activation(self) -> bool:
+        """
+        Espera wake word O gaze trigger, lo que ocurra primero.
+        Usa polling con timeout finito para poder:
+          - comprobar el gaze event
+          - renderizar el debug frame de cámara desde el hilo principal (macOS requiere esto)
+        Devuelve True si se activó por gaze.
+        """
+        debug = self._gaze_monitor is not None and self._gaze_monitor._cfg.debug
+        window_open = False
+
+        while True:
+            if self._gaze_event.is_set():
+                self._gaze_event.clear()
+                if window_open:
+                    try:
+                        import cv2
+                        cv2.destroyWindow("Jarvis \u2014 Gaze Monitor")
+                    except Exception:
+                        pass
+                return True
+
+            if self.wake.wait_for_wake(timeout_sec=0.1):
+                if window_open:
+                    try:
+                        import cv2
+                        cv2.destroyWindow("Jarvis \u2014 Gaze Monitor")
+                    except Exception:
+                        pass
+                return False
+
+            # ── Renderizar frame de debug desde el hilo principal ────────────
+            if debug and self._gaze_monitor is not None:
+                frame = self._gaze_monitor.get_debug_frame()
+                if frame is not None:
+                    import cv2
+                    cv2.imshow("Jarvis \u2014 Gaze Monitor", frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    window_open = True
+                    if key == ord("q"):
+                        cv2.destroyWindow("Jarvis \u2014 Gaze Monitor")
+                        debug = False   # desactivar tras cerrar
+
     def run_forever(self, agent_fn: AgentFn) -> None:
         """Loop principal."""
         try:
@@ -270,42 +335,50 @@ class VoiceLoop:
             print(f"⚠️ No se pudo iniciar wake word: {e}")
             print("   Revisa permisos de micrófono y WAKE_WORD_DEVICE en .env")
             return
-        print("👂 Escuchando wake word...\n")
-        
+
+        # Arrancar gaze trigger después del wake listener (necesita latest_rms activo)
+        if self._gaze_monitor is not None:
+            self._gaze_monitor.start()
+
+        print("👂 Escuchando (wake word o gaze trigger)...\n")
+
         try:
             while True:
-                print("💤 Esperando 'Jarvis'...")
-                woke = self.wake.wait_for_wake(timeout_sec=None)
-                
-                if not woke:
-                    continue
+                print("💤 Esperando activación...")
+                by_gaze = self._wait_for_activation()
 
-                print("✓ Wake word detectada!\n")
-                self.tts.speak("Dime")
-                
+                if by_gaze:
+                    # Usuario ya está hablando → pitido corto, sin TTS "Dime"
+                    self._play_gaze_beep()
+                    print("👁  Gaze activado — escuchando...\n")
+                else:
+                    print("✓ Wake word detectada!\n")
+                    self.tts.speak("Dime")
+
                 if self.loop_cfg.use_vad:
                     self._conversation_mode(agent_fn)
                 else:
-                    # Fallback sin Silero: cortar por silencio en lugar de grabación fija.
-                    wav_path = self.workspace / "_jarvis_input.wav"
-                    audio_data = self._detect_speech_rms(timeout=float(self.loop_cfg.record_seconds))
+                    wav_path   = self.workspace / "_jarvis_input.wav"
+                    audio_data = self._detect_speech_rms(
+                        timeout=float(self.loop_cfg.record_seconds)
+                    )
 
                     if audio_data is None:
                         self.tts.speak("No te he oído")
                         continue
 
-                    with wave.open(str(wav_path), 'wb') as wf:
+                    with wave.open(str(wav_path), "wb") as wf:
                         wf.setnchannels(1)
                         wf.setsampwidth(2)
                         wf.setframerate(16000)
                         wf.writeframes(audio_data.tobytes())
-                    
+
                     text = self.stt.transcribe_wav(wav_path).strip()
-                    
+
                     if not text or text.startswith("Error"):
                         self.tts.speak("No te he entendido")
                         continue
-                    
+
                     print(f"📝 {text}\n")
                     response = agent_fn(text)
                     print(f"💬 {response}\n")
@@ -315,3 +388,5 @@ class VoiceLoop:
             print("\n👋 Saliendo...")
         finally:
             self.wake.stop()
+            if self._gaze_monitor is not None:
+                self._gaze_monitor.stop()

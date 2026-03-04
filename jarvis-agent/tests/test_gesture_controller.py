@@ -501,16 +501,22 @@ class TestStartStop:
 
     def test_start_enabled_launches_thread(self):
         """Con enabled=True, start() lanza un thread daemon."""
+        import sys
+
         cfg = GestureConfig(enabled=True, stable_frames=1, cooldown_sec=0.1)
         ctrl = GestureController(cfg=cfg)
 
+        # Simular mediapipe <0.10 con mp.solutions disponible
+        fake_mp = MagicMock()
+        fake_mp.solutions = MagicMock()
         # Mockear _loop para que no intente abrir la cámara
-        with patch.object(ctrl, "_loop"):
-            ctrl.start()
-            assert ctrl._running is True
-            assert ctrl._thread is not None
-            assert ctrl._thread.daemon is True
-            ctrl.stop()
+        with patch.dict(sys.modules, {"mediapipe": fake_mp}):
+            with patch.object(ctrl, "_loop"):
+                ctrl.start()
+                assert ctrl._running is True
+                assert ctrl._thread is not None
+                assert ctrl._thread.daemon is True
+                ctrl.stop()
 
     def test_is_paused_initial_false(self):
         ctrl = _make_controller()

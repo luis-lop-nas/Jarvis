@@ -240,6 +240,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             from jarvis.voice.wake_word import WakeWordConfig
             from jarvis.voice.stt import STTConfig
             from jarvis.voice.tts import TTSConfig
+            from jarvis.voice.gaze_trigger import GazeTriggerConfig
             from jarvis.agent.tool_agent import tool_agent_from_settings
             from jarvis.memory.store import MemoryStore
 
@@ -273,13 +274,25 @@ def main(argv: Optional[list[str]] = None) -> int:
                 kokoro_language=settings.kokoro_language,
             )
 
+            gaze_cfg = GazeTriggerConfig(
+                enabled=bool(getattr(settings, "gaze_trigger_enabled", False)),
+                rms_threshold=float(getattr(settings, "gaze_trigger_rms_threshold", 400.0)),
+                cooldown=float(getattr(settings, "gaze_trigger_cooldown", 3.0)),
+                camera_index=int(getattr(settings, "camera_context_index", 0)),
+                debug=bool(getattr(settings, "gaze_debug", False)),
+            )
+
             voice_loop = VoiceLoop(
                 wake_cfg=wake_cfg,
                 stt_cfg=stt_cfg,
                 tts_cfg=tts_cfg,
+                gaze_cfg=gaze_cfg,
             )
 
-            print("🎤 Modo voz activado. Di 'Jarvis' para activar...")
+            activacion = "Di 'Jarvis' para activar"
+            if gaze_cfg.enabled:
+                activacion += " — o mira a la cámara y habla"
+            print(f"🎤 Modo voz activado. {activacion}.")
             print("Presiona Ctrl+C para salir.\n")
 
             def agent_fn(text: str) -> str:

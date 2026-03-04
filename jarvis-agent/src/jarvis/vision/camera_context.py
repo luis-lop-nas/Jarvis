@@ -32,6 +32,7 @@ class CameraContextConfig:
     interval_s: float = 5.0    # segundos entre análisis completos
     face_only: bool = False    # solo detección de cara, sin gastar cuota Groq Vision
     groq_api_key: str = ""
+    debug: bool = False        # muestra ventana OpenCV con overlay de detección
 
 
 class CameraContextAnalyzer:
@@ -71,6 +72,11 @@ class CameraContextAnalyzer:
         # MediaPipe (inicializado lazy en el hilo)
         self._mp_face = None
         self._face_cascade = None
+
+        # Último bbox detectado (para overlay de debug): (x, y, w, h) normalizado [0,1]
+        self._last_bbox: Optional[tuple[float, float, float, float]] = None
+        # Frame anotado listo para mostrar (escrito por hilo cámara, leído por hilo principal)
+        self._debug_frame: Optional[np.ndarray] = None
 
     # ── API pública ──────────────────────────────────────────────────────────
 
@@ -152,8 +158,11 @@ class CameraContextAnalyzer:
                     self._last_analysis = now
                     self._last_face_check = now
                     self._analyze_frame(frame)
+                    if self.cfg.debug:
+                        with self._lock:
+                            self._build_debug_frame(frame, self._user_present, self._looking_at_camera)
 
-                # ── Detección de cara rápida (solo MediaPipe, sin Groq) ───────
+                # ── Detección de cara rápida (solo MediaPipe / cascade) ────────
                 elif (now - self._last_face_check) >= self._FACE_INTERVAL:
                     self._last_face_check = now
                     present, looking = self._detect_face(frame)
@@ -162,28 +171,30 @@ class CameraContextAnalyzer:
                         self._looking_at_camera = looking
                         if not present:
                             self._object_context = ""
+                    if self.cfg.debug:
+                        self._build_debug_frame(frame, present, looking)
 
                 else:
                     time.sleep(0.02)
 
         finally:
             cap.release()
+            self._debug_frame = None  # señal al hilo principal para cerrar ventana
 
     def _init_face_detector(self) -> None:
         try:
             import mediapipe as mp
-            try:
-                mp_solutions = mp.solutions
-            except AttributeError:
-                raise ImportError("MediaPipe without solutions API")
-
-            self._mp_face = mp_solutions.face_detection.FaceDetection(
-                model_selection=0,            # modelo corta distancia (≤2m, más rápido)
+            # mp.solutions.face_detection fue eliminado en MediaPipe 0.10+
+            fd = getattr(getattr(mp, "solutions", None), "face_detection", None)
+            if fd is None:
+                raise ImportError("mp.solutions.face_detection no disponible (MediaPipe ≥0.10)")
+            self._mp_face = fd.FaceDetection(
+                model_selection=0,
                 min_detection_confidence=0.6,
             )
             log.info("MediaPipe Face Detection cargado")
         except Exception as e:
-            log.warning("MediaPipe Face Detection no disponible: %s", e)
+            log.debug("MediaPipe solutions API no disponible (%s) — usando OpenCV cascade", e)
             self._init_cv2_face_detector()
 
     def _init_cv2_face_detector(self) -> None:
@@ -254,6 +265,7 @@ class CameraContextAnalyzer:
         cy = bbox.ymin + bbox.height / 2     # centro vertical [0, 1]
 
         looking = face_w > 0.12 and 0.3 < cx < 0.7 and cy < 0.65
+        self._last_bbox = (bbox.xmin, bbox.ymin, face_w, bbox.height)
 
         return True, looking
 
@@ -275,6 +287,7 @@ class CameraContextAnalyzer:
             return False, False
 
         if len(faces) == 0:
+            self._last_bbox = None
             return False, False
 
         h, w = frame.shape[:2]
@@ -283,7 +296,53 @@ class CameraContextAnalyzer:
         cx = (x + fw * 0.5) / max(1.0, w)
         cy = (y + fh * 0.5) / max(1.0, h)
         looking = face_w > 0.12 and 0.3 < cx < 0.7 and cy < 0.7
+        self._last_bbox = (x / max(1.0, w), y / max(1.0, h), face_w, fh / max(1.0, h))
         return True, looking
+
+    # ── Debug frame (renderizado desde el hilo principal) ─────────────────────
+
+    @property
+    def debug_frame(self) -> Optional[np.ndarray]:
+        """Frame anotado listo para cv2.imshow. None si debug=False o sin frame."""
+        return self._debug_frame
+
+    def _build_debug_frame(self, frame: np.ndarray, present: bool, looking: bool) -> None:
+        """
+        Prepara el frame anotado y lo guarda en self._debug_frame.
+        NO llama cv2.imshow — el hilo principal se encarga de eso.
+        """
+        import cv2
+        dbg = frame.copy()
+        h, w = dbg.shape[:2]
+
+        # ── Bounding box de la cara ───────────────────────────────────────────
+        if present and self._last_bbox is not None:
+            nx, ny, nw, nh = self._last_bbox
+            x1, y1 = int(nx * w), int(ny * h)
+            x2, y2 = int((nx + nw) * w), int((ny + nh) * h)
+            color = (0, 255, 80) if looking else (0, 165, 255)  # verde / naranja
+            cv2.rectangle(dbg, (x1, y1), (x2, y2), color, 2)
+
+        # ── Zona de activación (30-70% H, <65% V) ────────────────────────────
+        cv2.rectangle(dbg,
+                      (int(0.30 * w), 0),
+                      (int(0.70 * w), int(0.65 * h)),
+                      (70, 70, 70), 1)
+
+        # ── Etiqueta de estado ────────────────────────────────────────────────
+        if looking:
+            label, lcolor = "MIRANDO  \u2713  ACTIVO", (0, 255, 80)
+        elif present:
+            label, lcolor = "CARA DETECTADA  (centra y acercate)", (0, 165, 255)
+        else:
+            label, lcolor = "sin cara", (100, 100, 100)
+
+        cv2.putText(dbg, label, (12, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, lcolor, 2, cv2.LINE_AA)
+        cv2.putText(dbg, "GAZE DEBUG  |  q = cerrar", (12, h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1, cv2.LINE_AA)
+
+        self._debug_frame = dbg
 
     def _analyze_objects_groq(self, frame: np.ndarray) -> str:
         """

@@ -200,6 +200,32 @@ class SwiftOverlayBridge:
         """Volver la entidad a la posición de reposo."""
         self._send({"action": "return_home"})
 
+    # ─────────────────────────────────────────────
+    # Notch animation API
+    # ─────────────────────────────────────────────
+
+    def notch_idle(self) -> None:
+        """Return notch to base idle state."""
+        self._send({"action": "notch_state", "state": "idle"})
+
+    def notch_listen(self) -> None:
+        """Expand notch with horizontal audio-wave animation."""
+        self._send({"action": "notch_state", "state": "listening"})
+
+    def notch_think(self) -> None:
+        """Expand notch with orbiting-dot animation."""
+        self._send({"action": "notch_state", "state": "thinking"})
+
+    def notch_speak(self, amplitude: float = 0.5) -> None:
+        """Expand notch with waveform sized to *amplitude* (0.0–1.0)."""
+        amplitude = float(max(0.0, min(1.0, amplitude)))
+        self._send({"action": "notch_state", "state": "speaking", "amplitude": amplitude})
+
+    def notch_alert(self, msg: str = "") -> None:
+        """One-shot bounce+glow alert on the notch, then returns to idle."""
+        msg = str(msg)[:200]
+        self._send({"action": "notch_alert", "message": msg})
+
     def run_on_main_thread(self, fn: Any) -> None:
         """Compatibilidad con OverlayBridge — simplemente ejecuta fn."""
         fn()
