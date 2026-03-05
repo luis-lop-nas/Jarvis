@@ -119,13 +119,26 @@ class STT:
         else:
             return self._transcribe_local(wav_path)
 
+    @staticmethod
+    def _maybe_compress(wav_path: Path) -> tuple[Path, bool]:
+        """Intenta comprimir WAV a FLAC (-60% tamaño típico). Retorna (path, es_temporal)."""
+        try:
+            import soundfile as sf
+            audio, sr = sf.read(str(wav_path))
+            flac_path = wav_path.with_suffix(".flac")
+            sf.write(str(flac_path), audio, sr)
+            return flac_path, True
+        except Exception:
+            return wav_path, False
+
     def _transcribe_groq(self, wav_path: Path) -> str:
-        """Transcribe usando Groq Whisper API."""
+        """Transcribe usando Groq Whisper API. Comprime a FLAC si soundfile está disponible."""
+        upload_path, is_temp = self._maybe_compress(wav_path)
         try:
             print("🎯 Transcribiendo con Groq Whisper...")
-            with open(wav_path, "rb") as f:
+            with open(upload_path, "rb") as f:
                 result = self._groq_client.audio.transcriptions.create(
-                    file=(wav_path.name, f.read()),
+                    file=(upload_path.name, f.read()),
                     model=self.cfg.groq_model,
                     language=self.cfg.language,
                     response_format="text",
@@ -138,6 +151,12 @@ class STT:
         except Exception as e:
             print(f"⚠ Error Groq STT: {e}. Intentando Whisper local...")
             return self._transcribe_local(wav_path)
+        finally:
+            if is_temp and upload_path.exists():
+                try:
+                    upload_path.unlink()
+                except Exception:
+                    pass
 
     def _transcribe_local(self, wav_path: Path) -> str:
         """Transcribe usando Whisper local."""

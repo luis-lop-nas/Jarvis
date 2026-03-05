@@ -39,10 +39,10 @@ _PLATFORM_ALIASES: Dict[str, str] = {
 }
 
 # Timeout para AppleScript de automatización directa (Messages)
-_TIMEOUT_DIRECT = 15
+_TIMEOUT_DIRECT = 8
 
 # Timeout para UI scripting (WhatsApp / Telegram: necesitan tiempo de arranque)
-_TIMEOUT_UI = 30
+_TIMEOUT_UI = 12
 
 
 # ── Helpers de seguridad ──────────────────────────────────────────────────────
@@ -112,26 +112,36 @@ end run
 
 # AppleScript para WhatsApp via UI scripting.
 # Cmd+F abre el buscador; flecha ↓ selecciona el primer resultado.
+# Delays adaptativos: polling cada 0.1s en vez de esperas fijas.
 _SCRIPT_WHATSAPP = """\
 on run argv
     set theReceiver to item 1 of argv
     set theMessage  to item 2 of argv
 
     tell application "WhatsApp" to activate
-    delay 1.5
+
+    -- Esperar a que la ventana aparezca (máx 1.5s, típico 0.3-0.6s)
+    tell application "System Events"
+        set waited to 0
+        repeat 15 times
+            if (count of windows of process "WhatsApp") > 0 then exit repeat
+            delay 0.1
+            set waited to waited + 1
+        end repeat
+    end tell
 
     tell application "System Events"
         tell process "WhatsApp"
             keystroke "f" using command down
-            delay 0.7
-            keystroke theReceiver
-            delay 1.2
-            key code 125
             delay 0.4
+            keystroke theReceiver
+            delay 0.8
+            key code 125
+            delay 0.3
             keystroke return
-            delay 0.9
+            delay 0.6
             keystroke theMessage
-            delay 0.2
+            delay 0.15
             keystroke return
         end tell
     end tell
@@ -141,26 +151,36 @@ end run
 
 # AppleScript para Telegram via UI scripting.
 # Cmd+K abre la búsqueda global de contactos.
+# Delays adaptativos: polling cada 0.1s en vez de esperas fijas.
 _SCRIPT_TELEGRAM = """\
 on run argv
     set theReceiver to item 1 of argv
     set theMessage  to item 2 of argv
 
     tell application "Telegram" to activate
-    delay 1.5
+
+    -- Esperar a que la ventana aparezca (máx 1.5s, típico 0.3-0.6s)
+    tell application "System Events"
+        set waited to 0
+        repeat 15 times
+            if (count of windows of process "Telegram") > 0 then exit repeat
+            delay 0.1
+            set waited to waited + 1
+        end repeat
+    end tell
 
     tell application "System Events"
         tell process "Telegram"
             keystroke "k" using command down
-            delay 0.7
-            keystroke theReceiver
-            delay 1.2
-            key code 125
             delay 0.4
+            keystroke theReceiver
+            delay 0.8
+            key code 125
+            delay 0.3
             keystroke return
-            delay 0.9
+            delay 0.6
             keystroke theMessage
-            delay 0.2
+            delay 0.15
             keystroke return
         end tell
     end tell

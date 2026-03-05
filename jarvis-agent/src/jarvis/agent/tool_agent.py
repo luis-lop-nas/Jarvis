@@ -163,6 +163,10 @@ class ToolAgent:
             "data_dir": Path.cwd() / "data",
         }
         self._pending_actions = PendingActionStore(ttl_seconds=self.config.dry_run_ttl_seconds)
+        # Cache para tools determinísticas (datetime, weather, system_info)
+        self._tool_result_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+        # Sesión HTTP persistente para Ollama (evita TCP handshake en cada llamada)
+        self._ollama_session: Optional[Any] = None
 
         if self.memory_store and self.config.enable_memory and not self.config.session_id:
             self.config.session_id = self.memory_store.create_session()
@@ -334,7 +338,22 @@ class ToolAgent:
             normalized["schema_warning"] = payload
             return normalized, None
 
+    # TTL en segundos para tools sin side-effects
+    _TOOL_CACHE_TTL: Dict[str, float] = {
+        "datetime":    60.0,   # cambia cada minuto
+        "weather":    300.0,   # 5 min de precisión suficiente
+        "system_info": 30.0,   # CPU/RAM volátil pero no necesita refresh constante
+    }
+
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        # Cache para tools determinísticas sin side-effects
+        ttl = self._TOOL_CACHE_TTL.get(tool_name)
+        if ttl is not None:
+            cache_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+            entry = self._tool_result_cache.get(cache_key)
+            if entry and (time.monotonic() - entry[0]) < ttl:
+                return entry[1]
+
         # Escanear args en busca de patrones de inyección antes de ejecutar
         inj = scan_tool_args(tool_name, tool_args)
         if inj.detected:
@@ -366,6 +385,11 @@ class ToolAgent:
         verified_out = self._verify_tool_result(tool_name, args_to_use, tool_out)
         self.intent_tracker.on_tool_executed(tool_name)
         self._save_tool_event(tool_name, args_to_use, verified_out)
+
+        # Guardar en cache si la tool es determinística
+        if ttl is not None and verified_out.get("ok", True):
+            self._tool_result_cache[cache_key] = (time.monotonic(), verified_out)
+
         return verified_out
 
     def _run_tool_calls_parallel(
@@ -1102,9 +1126,13 @@ class ToolAgent:
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(self.state.history)
 
+        if self._ollama_session is None:
+            import requests as _requests
+            self._ollama_session = _requests.Session()
+
         if not use_tools:
             try:
-                response = requests.post(
+                response = self._ollama_session.post(
                     f"{self.config.ollama_url}/api/chat",
                     json={"model": self.config.ollama_model, "messages": messages, "stream": False},
                     timeout=120,
@@ -1125,7 +1153,7 @@ class ToolAgent:
 
         for _ in range(self.config.max_tool_loops):
             try:
-                response = requests.post(
+                response = self._ollama_session.post(
                     f"{self.config.ollama_url}/api/chat",
                     json={"model": self.config.ollama_model, "messages": messages, "tools": tools, "stream": False},
                     timeout=120,

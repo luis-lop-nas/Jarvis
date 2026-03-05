@@ -98,7 +98,7 @@ class Settings(BaseSettings):
 
     # --- VAD avanzado (Silero + pre-buffer + adaptive noise) ---
     vad_engine: Literal["silero", "rms"] = Field(default="silero", alias="VAD_ENGINE")
-    vad_silence_ms: int    = Field(default=480,       alias="VAD_SILENCE_MS")      # ms de silencio para cortar
+    vad_silence_ms: int    = Field(default=350,       alias="VAD_SILENCE_MS")      # ms de silencio para cortar
     vad_pre_buffer_ms: int = Field(default=1500,      alias="VAD_PRE_BUFFER_MS")   # ms de ring buffer pre-wake
     wake_beep: bool        = Field(default=True,      alias="WAKE_BEEP")           # beep al detectar wake word
 

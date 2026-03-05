@@ -113,7 +113,7 @@ class TestVadSilenceMs:
 
     def test_valid_default(self):
         s = make_settings()
-        assert s.vad_silence_ms == 480
+        assert s.vad_silence_ms == 350
 
 
 # ─────────────────────────────────────────────────────────────────────────────

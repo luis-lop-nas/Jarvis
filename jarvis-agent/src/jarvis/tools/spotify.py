@@ -80,7 +80,7 @@ def spotify_control(args: Dict[str, Any]) -> Dict[str, Any]:
             ["osascript", "-e", script],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=4,
         )
         
         if result.returncode != 0:
