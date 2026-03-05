@@ -26,3 +26,10 @@ CREATE TABLE IF NOT EXISTS tool_events (
   created_at TEXT NOT NULL,
   FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
+
+-- Índices para queries frecuentes (O(log n) en lugar de O(n))
+CREATE INDEX IF NOT EXISTS idx_messages_session_id  ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at  ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_events_session  ON tool_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_created  ON tool_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_events_name     ON tool_events(tool_name);

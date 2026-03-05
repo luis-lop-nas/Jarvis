@@ -173,47 +173,62 @@ class ToolAgent:
             if self.config.debug:
                 print(f"📝 Nueva sesión: {self.config.session_id[:8]}...")
 
-        # Inicializar Claude
+        # Clientes LLM — se inicializan en background para no bloquear el UI thread
         self.claude_client = None
-        if self.config.use_claude and self.config.claude_api_key:
-            try:
-                from anthropic import Anthropic
-                self.claude_client = Anthropic(api_key=self.config.claude_api_key)
-                print(f"✅ Claude {self.config.claude_model} activado (conversación + tools)")
-                if self.memory_store:
-                    print("✅ Memoria persistente activada")
-            except ImportError:
-                print("⚠️ 'anthropic' no instalado. pip install anthropic")
-
-        # Inicializar Gemini
         self.gemini_client = None
-        if self.config.use_gemini and self.config.gemini_api_key:
-            try:
-                from google import genai
-                self.gemini_client = genai.Client(api_key=self.config.gemini_api_key)
-                if not self.claude_client:
-                    print(f"✅ Gemini {self.config.gemini_model} activado")
-            except ImportError:
-                print("⚠️ 'google-genai' no instalado. pip install google-genai")
-
-        # Inicializar Groq (fallback o STT)
         self.groq_client = None
-        if self.config.use_groq and self.config.groq_api_key:
-            try:
-                from groq import Groq
-                self.groq_client = Groq(api_key=self.config.groq_api_key)
-                if not self.claude_client:
-                    print("✅ Groq activado como LLM principal")
-            except ImportError:
-                print("⚠️ Librería 'groq' no instalada.")
+        self._clients_ready = threading.Event()
 
         # Multi-step intent tracker (shared across all backends)
         self.intent_tracker = IntentTracker()
 
-        # Pre-computar schemas de tools (inmutables durante la vida del agente)
+        # Pre-computar schemas de tools (inmutables, no dependen de clientes LLM)
         self._cached_claude_tools = self._tools_for_claude()
         self._cached_ollama_tools = self._tools_for_ollama()
-        self._cached_gemini_tools = self._tools_for_gemini() if self.gemini_client else []
+        self._cached_gemini_tools: list = []
+
+        threading.Thread(target=self._init_clients, daemon=True, name="jarvis-llm-init").start()
+
+    def _init_clients(self) -> None:
+        """Inicializa clientes LLM en background (no bloquea el UI thread)."""
+        try:
+            # Inicializar Claude
+            if self.config.use_claude and self.config.claude_api_key:
+                try:
+                    from anthropic import Anthropic
+                    self.claude_client = Anthropic(api_key=self.config.claude_api_key)
+                    print(f"✅ Claude {self.config.claude_model} activado (conversación + tools)")
+                    if self.memory_store:
+                        print("✅ Memoria persistente activada")
+                except ImportError:
+                    print("⚠️ 'anthropic' no instalado. pip install anthropic")
+
+            # Inicializar Gemini
+            if self.config.use_gemini and self.config.gemini_api_key:
+                try:
+                    from google import genai
+                    self.gemini_client = genai.Client(api_key=self.config.gemini_api_key)
+                    self._cached_gemini_tools = self._tools_for_gemini()
+                    if not self.claude_client:
+                        print(f"✅ Gemini {self.config.gemini_model} activado")
+                except ImportError:
+                    print("⚠️ 'google-genai' no instalado. pip install google-genai")
+
+            # Inicializar Groq
+            if self.config.use_groq and self.config.groq_api_key:
+                try:
+                    from groq import Groq
+                    self.groq_client = Groq(api_key=self.config.groq_api_key)
+                    if not self.claude_client:
+                        print("✅ Groq activado como LLM principal")
+                except ImportError:
+                    print("⚠️ Librería 'groq' no instalada.")
+        finally:
+            self._clients_ready.set()
+
+    def _wait_clients(self, timeout: float = 30.0) -> None:
+        """Espera a que los clientes LLM estén listos (máx timeout segundos)."""
+        self._clients_ready.wait(timeout=timeout)
 
     # ------------------------------------------------------------------
     # Memoria
@@ -652,7 +667,7 @@ class ToolAgent:
 
     def _build_claude_messages(self) -> List[Message]:
         """Filtra el historial para Claude (solo user/assistant con texto, truncado)."""
-        history = truncate_history(self.state.history, max_messages=20)
+        history = truncate_history(self.state.history, backend="claude")
         messages: List[Message] = []
         for msg in history:
             role = msg.get("role")
@@ -689,7 +704,11 @@ class ToolAgent:
                 response = self.claude_client.messages.create(
                     model=self.config.claude_model,
                     max_tokens=4096,
-                    system=SYSTEM_PROMPT,
+                    system=[{
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
                     tools=tools,
                     messages=messages,
                 )
@@ -852,7 +871,7 @@ class ToolAgent:
 
         # Construir historial en formato Gemini (truncado)
         contents: List[Any] = []
-        for msg in truncate_history(self.state.history, max_messages=20):
+        for msg in truncate_history(self.state.history, backend="gemini"):
             role = msg.get("role")
             content = msg.get("content", "")
             if role == "user" and isinstance(content, str) and content.strip():
@@ -950,6 +969,120 @@ class ToolAgent:
         self._save_message("assistant", msg)
         return msg
 
+    def _run_sentences_gemini(
+        self,
+        user_text: str,
+        on_sentence: Callable[[str], None],
+        interrupt_event: Optional[threading.Event],
+    ) -> str:
+        """
+        Gemini con streaming: emite frases vía on_sentence conforme llegan tokens.
+        Para tool calls (no son streamables), ejecuta de forma bloqueante y continúa.
+        """
+        from google.genai import types
+
+        contents: List[Any] = []
+        for msg in truncate_history(self.state.history, backend="gemini"):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user" and isinstance(content, str) and content.strip():
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(content)]))
+            elif role == "assistant" and isinstance(content, str) and content.strip():
+                contents.append(types.Content(role="model", parts=[types.Part.from_text(content)]))
+
+        tools = self._cached_gemini_tools
+        first_emitted: List[bool] = [False]
+
+        def _interrupted() -> bool:
+            return interrupt_event is not None and interrupt_event.is_set()
+
+        cfg = types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            tools=tools if tools else None,
+        )
+
+        for _ in range(self.config.max_tool_loops):
+            if _interrupted():
+                break
+
+            buffer = ""
+            all_parts: List[Any] = []
+
+            try:
+                for chunk in self.gemini_client.models.generate_content_stream(
+                    model=self.config.gemini_model,
+                    contents=contents,
+                    config=cfg,
+                ):
+                    if _interrupted():
+                        break
+                    # Acumular partes del chunk
+                    if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
+                        for part in chunk.candidates[0].content.parts:
+                            all_parts.append(part)
+                    # Stream texto
+                    chunk_text = chunk.text
+                    if chunk_text:
+                        buffer += chunk_text
+                        buffer = _emit_sentences(buffer, on_sentence, first_emitted)
+            except Exception as e:
+                _logger.warning("[sentences:gemini] Stream error: %s — fallback blocking", e)
+                return self._run_with_gemini(user_text)
+
+            # Emitir resto del buffer si la respuesta fue puro texto
+            tool_calls = [p for p in all_parts if p.function_call is not None]
+            if not tool_calls:
+                if buffer.strip() and not _interrupted():
+                    on_sentence(buffer.strip())
+                text = "".join(p.text for p in all_parts if hasattr(p, "text") and p.text).strip()
+                text = text or "No generé respuesta."
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                return text
+
+            # Hay tool calls — añadir respuesta modelo al historial
+            contents.append(types.Content(role="model", parts=all_parts))
+
+            result_parts = []
+            for part in tool_calls:
+                fc = part.function_call
+                tool_args = dict(fc.args) if fc.args else {}
+
+                question = self.intent_tracker.check_tool_call(fc.name, tool_args, self.registry)
+                if question:
+                    if self.config.debug:
+                        print(f"⏳ Intent pendiente ({fc.name}): {question}")
+                    self.state.add_assistant(question)
+                    self._save_message("assistant", question)
+                    return question
+
+                if self.config.debug:
+                    print(f"🔧 Gemini usa: {fc.name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
+
+                confirm_evt = self._maybe_build_dry_run(fc.name, tool_args)
+                if confirm_evt:
+                    text = self._render_dry_run_prompt(confirm_evt)
+                    self.state.add_assistant(text)
+                    self._save_message("assistant", text)
+                    return text
+
+                tool_out = self._execute_tool(fc.name, tool_args)
+                result_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name,
+                        response={"result": json.dumps(tool_out, ensure_ascii=False)},
+                    )
+                )
+
+            contents.append(types.Content(role="user", parts=result_parts))
+            # Reset buffer y first_emitted para siguiente iteración
+            first_emitted[0] = False
+
+        msg = "Límite de iteraciones de herramientas alcanzado."
+        self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
+        return msg
+
     # ------------------------------------------------------------------
     # Motor Groq (fallback)
     # ------------------------------------------------------------------
@@ -959,7 +1092,7 @@ class ToolAgent:
         # SYSTEM_PROMPT_GROQ: versión compacta sin ejemplos de código Python que
         # confunden al modelo llama sobre el formato de function calling de la API.
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
-        for msg in truncate_history(self.state.history, max_messages=20):
+        for msg in truncate_history(self.state.history, backend="groq"):
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str):
@@ -1093,8 +1226,8 @@ class ToolAgent:
 
     def _run_with_groq_simple(self, user_text: str) -> str:
         """Groq sin tools — solo usado como fallback de Claude/Gemini en caso de error."""
-        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in truncate_history(self.state.history, max_messages=20):
+        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
+        for msg in truncate_history(self.state.history, backend="groq"):
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str):
@@ -1123,8 +1256,8 @@ class ToolAgent:
 
     def _run_with_ollama(self, user_text: str, use_tools: bool = True) -> str:
         """Ollama local — solo usado si Claude y Groq no están disponibles."""
-        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(self.state.history)
+        messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
+        messages.extend(truncate_history(self.state.history, backend="ollama"))
 
         if self._ollama_session is None:
             import requests as _requests
@@ -1285,6 +1418,7 @@ class ToolAgent:
 
     def run(self, user_text: str) -> str:
         """Ejecuta petición. Prioridad: Claude > Groq > Ollama."""
+        self._wait_clients()
         user_text = (user_text or "").strip()
         if not user_text:
             return "Dime qué quieres que haga."
@@ -1351,8 +1485,8 @@ class ToolAgent:
 
         # Groq streaming nativo
         if self.groq_client and self.config.use_groq:
-            messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
-            for msg in truncate_history(self.state.history, max_messages=20):
+            messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
+            for msg in truncate_history(self.state.history, backend="groq"):
                 role = msg.get("role")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and isinstance(content, str):
@@ -1429,6 +1563,7 @@ class ToolAgent:
         Para Claude y Groq usa streaming; para Gemini/Ollama hace run()
         blocking y luego emite las frases de la respuesta completa.
         """
+        self._wait_clients()
         user_text = (user_text or "").strip()
         if not user_text:
             msg = "Dime qué quieres que haga."
@@ -1453,13 +1588,12 @@ class ToolAgent:
         if self.groq_client and self.config.use_groq:
             return self._run_sentences_groq(user_text, on_sentence, interrupt_event)
 
-        # Gemini / Ollama: sin streaming propio — emitir frases de respuesta completa
         if self.gemini_client and self.config.use_gemini:
-            full = self._run_with_gemini(user_text)
-        else:
-            full = self._run_with_ollama(user_text, use_tools=True)
+            return self._run_sentences_gemini(user_text, on_sentence, interrupt_event)
 
-        # Emitir frases de la respuesta completa
+        # Ollama: sin streaming propio — emitir frases de respuesta completa
+        full = self._run_with_ollama(user_text, use_tools=True)
+
         first_emitted: List[bool] = [False]
         remainder = _emit_sentences(full, on_sentence, first_emitted)
         if remainder.strip():
@@ -1491,7 +1625,11 @@ class ToolAgent:
                 with self.claude_client.messages.stream(
                     model=self.config.claude_model,
                     max_tokens=4096,
-                    system=SYSTEM_PROMPT,
+                    system=[{
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
                     tools=tools,
                     messages=messages,
                 ) as stream:
@@ -1602,7 +1740,7 @@ class ToolAgent:
           4. Si no hay tool_calls: emite buffer restante, guarda y retorna.
         """
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
-        for msg in truncate_history(self.state.history, max_messages=20):
+        for msg in truncate_history(self.state.history, backend="groq"):
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and isinstance(content, str):

@@ -48,21 +48,38 @@ class AgentState:
 # Helpers de contexto
 # ---------------------------------------------------------------------------
 
+# Límites de historial por backend según su ventana de contexto:
+#   claude:  128k tokens → 100 mensajes (generoso, system prompt largo)
+#   gemini:  1M tokens   → 100 mensajes
+#   groq:    128k tokens → 40 mensajes  (SYSTEM_PROMPT_GROQ ~280 tokens)
+#   ollama:  4k tokens   → 10 mensajes  (modelos pequeños)
+_HISTORY_LIMITS = {
+    "claude": 100,
+    "gemini": 100,
+    "groq":    40,
+    "ollama":  10,
+}
+
+
 def truncate_history(
     history: List[Dict[str, Any]],
     max_messages: int = 20,
+    backend: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Devuelve los últimos max_messages mensajes.
+    Si se pasa `backend`, usa el límite definido en _HISTORY_LIMITS.
     Si hay system prompt al inicio, lo preserva siempre.
     """
-    if len(history) <= max_messages:
+    limit = _HISTORY_LIMITS.get(backend, max_messages)
+
+    if len(history) <= limit:
         return history
 
     if history and history[0].get("role") == "system":
-        return [history[0]] + history[-(max_messages - 1):]
+        return [history[0]] + history[-(limit - 1):]
 
-    return history[-max_messages:]
+    return history[-limit:]
 
 
 def count_tokens_estimate(messages: List[Dict[str, Any]]) -> int:

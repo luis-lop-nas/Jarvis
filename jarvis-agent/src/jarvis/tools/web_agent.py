@@ -51,6 +51,49 @@ except ImportError:
         """Stub para cuando Playwright no está instalado."""
 
 # ---------------------------------------------------------------------------
+# Browser pool — instancia persistente de Chromium entre llamadas
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_browser_lock = _threading.Lock()
+_pw_ctx: Any = None          # sync_playwright().__enter__()
+_browser: Optional[Any] = None  # Browser activo
+_pw_func_ref: Any = None     # Referencia a sync_playwright usada al crear _browser
+
+
+def _get_or_create_browser(headless: bool = True) -> Any:
+    """
+    Devuelve el Browser singleton reutilizable, lanzando Chromium solo la primera vez
+    (o si se ha desconectado / sync_playwright fue reemplazado por un mock en tests).
+    Ahorra 2-5s de startup por llamada en producción.
+    """
+    global _pw_ctx, _browser, _pw_func_ref
+    with _browser_lock:
+        # Detectar si sync_playwright fue patcheado (tests) o el browser se desconectó
+        pw_changed = (_pw_func_ref is not sync_playwright)
+        browser_dead = (_browser is None or not _browser.is_connected())
+        if pw_changed or browser_dead:
+            if _pw_ctx is not None:
+                try:
+                    _pw_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
+            _pw_func_ref = sync_playwright
+            _pw_ctx = sync_playwright().__enter__()
+            _browser = _pw_ctx.chromium.launch(
+                headless=headless,
+                args=[
+                    f"--window-size={_VIEWPORT_W},{_VIEWPORT_H}",
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
+            )
+        return _browser
+
+
+# ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
@@ -767,148 +810,140 @@ def run_web_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        with sync_playwright() as pw:
-            browser: Browser = pw.chromium.launch(
-                headless=headless,
-                args=[
-                    f"--window-size={_VIEWPORT_W},{_VIEWPORT_H}",
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-            )
-            ctx: BrowserContext = browser.new_context(
-                viewport={"width": _VIEWPORT_W, "height": _VIEWPORT_H},
-                user_agent=_USER_AGENT,
-            )
-            page: Page = ctx.new_page()
+        browser: Browser = _get_or_create_browser(headless=headless)
+        ctx: BrowserContext = browser.new_context(
+            viewport={"width": _VIEWPORT_W, "height": _VIEWPORT_H},
+            user_agent=_USER_AGENT,
+        )
+        page: Page = ctx.new_page()
 
-            try:
-                # Navegar a URL inicial si se proporcionó
-                if start_url:
-                    if not start_url.startswith(("http://", "https://")):
-                        start_url = "https://" + start_url
-                    try:
-                        page.goto(start_url, wait_until="domcontentloaded", timeout=20_000)
-                        page.wait_for_timeout(1_000)
-                    except Exception as e:
-                        print(f"[WebAgent] Advertencia navegando a URL inicial: {e}")
+        try:
+            # Navegar a URL inicial si se proporcionó
+            if start_url:
+                if not start_url.startswith(("http://", "https://")):
+                    start_url = "https://" + start_url
+                try:
+                    page.goto(start_url, wait_until="domcontentloaded", timeout=20_000)
+                    page.wait_for_timeout(1_000)
+                except Exception as e:
+                    print(f"[WebAgent] Advertencia navegando a URL inicial: {e}")
 
-                # ── Bucle principal del agente ────────────────────────────────
-                for step in range(max_steps):
-                    steps_taken = step + 1
+            # ── Bucle principal del agente ────────────────────────────────
+            for step in range(max_steps):
+                steps_taken = step + 1
 
-                    # Comprobar timeout global
-                    elapsed = time.monotonic() - start_time
-                    if elapsed > _GLOBAL_TIMEOUT_SEC:
+                # Comprobar timeout global
+                elapsed = time.monotonic() - start_time
+                if elapsed > _GLOBAL_TIMEOUT_SEC:
+                    result_text = (
+                        f"Timeout de {_GLOBAL_TIMEOUT_SEC}s alcanzado. "
+                        f"Resultado parcial: {result_text or 'sin resultado'}"
+                    )
+                    break
+
+                # Estado actual de la página
+                page_state = {
+                    "url": page.url,
+                    "title": page.title() if page.url not in ("about:blank", "") else "",
+                    "elements": _get_page_elements(page),
+                }
+
+                # Screenshot (solo si el LLM soporta visión)
+                screenshot_b64 = None
+                if llm_config.get("vision"):
+                    screenshot_b64 = _take_screenshot(page)
+
+                print(
+                    f"[WebAgent] Paso {step+1}/{max_steps} | "
+                    f"URL: {page_state['url'][:60]} | "
+                    f"Elementos: {len(page_state['elements'])}"
+                )
+
+                # Decisión del LLM
+                action = _get_next_action(
+                    task, page_state, history, screenshot_b64, llm_config
+                )
+
+                if not action:
+                    consecutive_failures += 1
+                    print(f"[WebAgent] LLM no respondió (fallo #{consecutive_failures})")
+                    if consecutive_failures >= 3:
+                        result_text = "El LLM no respondió correctamente en 3 intentos."
+                        break
+                    continue
+                else:
+                    consecutive_failures = 0
+
+                act_type = action.get("action", "")
+                print(f"[WebAgent] Acción: {act_type} | {json.dumps(action)[:120]}")
+
+                # ── Acciones terminales ───────────────────────────────────
+                if act_type == "done":
+                    result_text = action.get("result", "Tarea completada")
+                    break
+
+                if act_type == "ask_confirmation":
+                    msg = action.get("message", "¿Confirmas esta acción?")
+                    if not force_sensitive:
+                        requires_confirmation = msg
+                        result_text = f"Confirmación requerida: {msg}"
+                        break
+                    # force_sensitive=True: continuar sin pausa
+                    history.append({"action": action, "result": "confirmed", "success": True})
+                    continue
+
+                # ── Comprobación de sensibilidad ─────────────────────────
+                if not force_sensitive:
+                    combined = " ".join([
+                        action.get("description", ""),
+                        action.get("text", ""),
+                        action.get("url", ""),
+                    ])
+                    if _is_sensitive(combined):
+                        requires_confirmation = (
+                            f"Estoy a punto de {act_type}: {combined.strip()[:200]}. "
+                            "¿Confirmas?"
+                        )
+                        result_text = f"Confirmación requerida: {requires_confirmation}"
+                        break
+
+                # ── Ejecutar acción ──────────────────────────────────────
+                success, msg = _execute_action(page, action)
+                print(
+                    f"[WebAgent] {'✓' if success else '✗'} "
+                    f"{act_type}: {msg[:100]}"
+                )
+
+                history.append({
+                    "action": action,
+                    "result": msg,
+                    "success": success,
+                })
+
+                if not success:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 4:
                         result_text = (
-                            f"Timeout de {_GLOBAL_TIMEOUT_SEC}s alcanzado. "
-                            f"Resultado parcial: {result_text or 'sin resultado'}"
+                            f"Demasiados fallos consecutivos ({consecutive_failures}). "
+                            f"Última info: {msg}"
                         )
                         break
+                else:
+                    consecutive_failures = 0
 
-                    # Estado actual de la página
-                    page_state = {
-                        "url": page.url,
-                        "title": page.title() if page.url not in ("about:blank", "") else "",
-                        "elements": _get_page_elements(page),
-                    }
+            # Fin del bucle
+            if not result_text:
+                result_text = (
+                    f"Se alcanzó el límite de {max_steps} pasos. "
+                    "El agente no devolvió un resultado final explícito."
+                )
 
-                    # Screenshot (solo si el LLM soporta visión)
-                    screenshot_b64 = None
-                    if llm_config.get("vision"):
-                        screenshot_b64 = _take_screenshot(page)
-
-                    print(
-                        f"[WebAgent] Paso {step+1}/{max_steps} | "
-                        f"URL: {page_state['url'][:60]} | "
-                        f"Elementos: {len(page_state['elements'])}"
-                    )
-
-                    # Decisión del LLM
-                    action = _get_next_action(
-                        task, page_state, history, screenshot_b64, llm_config
-                    )
-
-                    if not action:
-                        consecutive_failures += 1
-                        print(f"[WebAgent] LLM no respondió (fallo #{consecutive_failures})")
-                        if consecutive_failures >= 3:
-                            result_text = "El LLM no respondió correctamente en 3 intentos."
-                            break
-                        continue
-                    else:
-                        consecutive_failures = 0
-
-                    act_type = action.get("action", "")
-                    print(f"[WebAgent] Acción: {act_type} | {json.dumps(action)[:120]}")
-
-                    # ── Acciones terminales ───────────────────────────────────
-                    if act_type == "done":
-                        result_text = action.get("result", "Tarea completada")
-                        break
-
-                    if act_type == "ask_confirmation":
-                        msg = action.get("message", "¿Confirmas esta acción?")
-                        if not force_sensitive:
-                            requires_confirmation = msg
-                            result_text = f"Confirmación requerida: {msg}"
-                            break
-                        # force_sensitive=True: continuar sin pausa
-                        history.append({"action": action, "result": "confirmed", "success": True})
-                        continue
-
-                    # ── Comprobación de sensibilidad ─────────────────────────
-                    if not force_sensitive:
-                        combined = " ".join([
-                            action.get("description", ""),
-                            action.get("text", ""),
-                            action.get("url", ""),
-                        ])
-                        if _is_sensitive(combined):
-                            requires_confirmation = (
-                                f"Estoy a punto de {act_type}: {combined.strip()[:200]}. "
-                                "¿Confirmas?"
-                            )
-                            result_text = f"Confirmación requerida: {requires_confirmation}"
-                            break
-
-                    # ── Ejecutar acción ──────────────────────────────────────
-                    success, msg = _execute_action(page, action)
-                    print(
-                        f"[WebAgent] {'✓' if success else '✗'} "
-                        f"{act_type}: {msg[:100]}"
-                    )
-
-                    history.append({
-                        "action": action,
-                        "result": msg,
-                        "success": success,
-                    })
-
-                    if not success:
-                        consecutive_failures += 1
-                        if consecutive_failures >= 4:
-                            result_text = (
-                                f"Demasiados fallos consecutivos ({consecutive_failures}). "
-                                f"Última info: {msg}"
-                            )
-                            break
-                    else:
-                        consecutive_failures = 0
-
-                # Fin del bucle
-                if not result_text:
-                    result_text = (
-                        f"Se alcanzó el límite de {max_steps} pasos. "
-                        "El agente no devolvió un resultado final explícito."
-                    )
-
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+        finally:
+            # Cerrar solo el contexto (tab aislado), no el browser (se reutiliza)
+            try:
+                ctx.close()
+            except Exception:
+                pass
 
     except Exception as e:
         return {

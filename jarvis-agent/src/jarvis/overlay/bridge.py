@@ -50,9 +50,9 @@ class OverlayBridge:
         """Conectar el NotchPanel para recibir state y audio_level."""
         self._notch = notch
 
-        # Timer que vacía la cola cada 50ms en el hilo principal
+        # Timer que vacía la cola cada 16ms en el hilo principal (~60 FPS)
         self._pump_timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.05, self._PumpTarget.new(), "pump:", self, True
+            0.016, self._PumpTarget.new(), "pump:", self, True
         )
 
     # ------------------------------------------------------------------

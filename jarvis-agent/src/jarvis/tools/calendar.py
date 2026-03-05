@@ -376,6 +376,16 @@ def calendar_query(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         if action == "today":
+            # Fast path: EventKit (<80ms). Fallback: AppleScript
+            try:
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                events = _eventkit_events_for_range(today, today + timedelta(days=1))
+                if not events:
+                    return {"ok": True, "result": "📅 No hay eventos hoy"}
+                lines = "\n".join(f"  • {e}" for e in events)
+                return {"ok": True, "result": f"📅 Eventos de hoy:\n{lines}"}
+            except Exception:
+                pass  # fallback to AppleScript below
             script = '''
             tell application "Calendar"
                 set todayStart to current date
@@ -404,6 +414,16 @@ def calendar_query(args: Dict[str, Any]) -> Dict[str, Any]:
             '''
 
         elif action == "tomorrow":
+            # Fast path: EventKit
+            try:
+                tomorrow = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                events = _eventkit_events_for_range(tomorrow, tomorrow + timedelta(days=1))
+                if not events:
+                    return {"ok": True, "result": "📅 No hay eventos mañana"}
+                lines = "\n".join(f"  • {e}" for e in events)
+                return {"ok": True, "result": f"📅 Eventos de mañana:\n{lines}"}
+            except Exception:
+                pass
             script = '''
             tell application "Calendar"
                 set tomorrowStart to (current date) + (1 * days)
@@ -432,6 +452,16 @@ def calendar_query(args: Dict[str, Any]) -> Dict[str, Any]:
             '''
 
         elif action == "week":
+            # Fast path: EventKit
+            try:
+                week_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                events = _eventkit_events_for_range(week_start, week_start + timedelta(days=7))
+                if not events:
+                    return {"ok": True, "result": "📅 No hay eventos esta semana"}
+                lines = "\n".join(f"  • {e}" for e in events)
+                return {"ok": True, "result": f"📅 Eventos de esta semana ({len(events)}):\n{lines}"}
+            except Exception:
+                pass
             script = '''
             tell application "Calendar"
                 set weekStart to current date

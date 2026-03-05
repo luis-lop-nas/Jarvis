@@ -126,7 +126,7 @@ class _ClipboardMonitor:
     Actualiza self.text cada segundo con el contenido actual (texto plano).
     Thread-safe para lectura de `text`.
     """
-    _POLL     = 1.0    # segundos entre sondeos
+    _POLL     = 3.0    # segundos entre sondeos
     _MAX_LEN  = 250    # máximo de caracteres a guardar
 
     def __init__(self) -> None:
@@ -439,6 +439,8 @@ class JarvisDaemon:
 
     def start(self) -> None:
         self._running = True
+        # Pre-warm EventKit en background para que el primer query de calendar sea rápido
+        threading.Thread(target=self._prewarm_eventkit, name="jarvis-eventkit-prewarm", daemon=True).start()
         if self._camera_ctx:
             self._camera_ctx.start()
         if self._screen_ctx:
@@ -501,7 +503,7 @@ class JarvisDaemon:
 
         while self._running:
             try:
-                source = self._trigger_queue.get(timeout=0.05)
+                source = self._trigger_queue.get(timeout=0.01)
             except _queue.Empty:
                 continue
 
@@ -1131,6 +1133,14 @@ class JarvisDaemon:
         except Exception as e:
             # AVFoundation no disponible o no necesario — ignorar silenciosamente
             print(f"ℹ️  Verificación de permiso de micrófono: {e}")
+
+    def _prewarm_eventkit(self) -> None:
+        """Inicializa EventKit en background al arrancar para que el primer query de calendar sea rápido."""
+        try:
+            from jarvis.tools.calendar import _get_store
+            _get_store()
+        except Exception:
+            pass  # EventKit no disponible o permisos denegados — sin impacto
 
     def _request_accessibility(self) -> None:
         try:

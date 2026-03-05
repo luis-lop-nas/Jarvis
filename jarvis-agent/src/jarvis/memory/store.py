@@ -38,12 +38,15 @@ class MemoryStore:
         return self._local.conn
 
     def _init_db(self) -> None:
-        """Inicializa la base de datos con el schema."""
+        """Inicializa la base de datos con el schema y aplica migraciones."""
         schema_path = Path(__file__).parent / "schema.sql"
         conn = self._get_conn()
         with open(schema_path, 'r') as f:
             conn.executescript(f.read())
         conn.commit()
+        # Migración: crear índices en BDs existentes que los puedan tener ya
+        # (CREATE INDEX IF NOT EXISTS es idempotente, no falla si ya existe)
+        conn.execute("PRAGMA incremental_vacuum(0)")  # activa auto_vacuum si no estaba
 
     def _increment_write(self) -> None:
         """Incrementa el contador de escrituras; lanza VACUUM incremental cada 100."""
@@ -121,16 +124,23 @@ class MemoryStore:
         conn.commit()
         self._increment_write()
 
-    def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Obtiene todos los mensajes de una sesión."""
+    def get_session_messages(
+        self, session_id: str, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Obtiene los últimos `limit` mensajes de una sesión (default 200)."""
         cursor = self._get_conn().execute(
             """
             SELECT role, content, created_at
-            FROM messages
-            WHERE session_id = ?
+            FROM (
+                SELECT role, content, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            )
             ORDER BY created_at ASC
             """,
-            (session_id,),
+            (session_id, limit),
         )
         return [dict(row) for row in cursor.fetchall()]
 

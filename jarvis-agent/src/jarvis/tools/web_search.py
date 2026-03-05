@@ -12,7 +12,9 @@ Cache LRU en memoria con TTL de 5 minutos para evitar peticiones repetidas.
 
 from __future__ import annotations
 
+import re
 import time
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -48,57 +50,96 @@ _DDG_API = "https://api.duckduckgo.com/"
 _DDG_HEADERS = {"User-Agent": "Mozilla/5.0 Jarvis/1.0"}
 
 
-def _fetch_ddg_json(query: str, limit: int) -> List[Dict[str, str]]:
-    """Obtiene resultados de DuckDuckGo vía JSON API."""
-    params = {
-        "q": query,
-        "format": "json",
-        "no_html": "1",
-        "skip_disambig": "1",
-    }
-    r = requests.get(_DDG_API, params=params, timeout=8, headers=_DDG_HEADERS)
-    r.raise_for_status()
-    data = r.json()
+_TAG_RE = re.compile(r"<[^>]+>")
+_RESULT_RE = re.compile(
+    r'<a[^>]+class="result__a"[^>]+href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
+    r'<a[^>]+class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
+    re.DOTALL,
+)
 
+
+def _strip_tags(s: str) -> str:
+    s = _TAG_RE.sub("", s)
+    return " ".join(
+        s.replace("&nbsp;", " ").replace("&amp;", "&")
+         .replace("&quot;", '"').replace("&#39;", "'").split()
+    ).strip()
+
+
+def _fetch_ddg_json(query: str, limit: int) -> List[Dict[str, str]]:
+    """
+    Intenta DDG Instant Answer JSON primero (rápido para preguntas factuales).
+    Si devuelve pocos resultados, cae a DDG HTML scraping para búsquedas generales.
+    """
     results: List[Dict[str, str]] = []
 
-    # Resultado principal (AbstractText)
-    abstract = data.get("AbstractText", "").strip()
-    abstract_url = data.get("AbstractURL", "").strip()
-    abstract_src = data.get("AbstractSource", "").strip()
-    if abstract and abstract_url:
-        results.append({
-            "title": abstract_src or abstract_url,
-            "url": abstract_url,
-            "snippet": abstract,
-        })
+    # 1. Instant Answer API (Wikipedia/conocimiento, sin clave, muy rápido)
+    try:
+        params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+        r = requests.get(_DDG_API, params=params, timeout=6, headers=_DDG_HEADERS)
+        r.raise_for_status()
+        data = r.json()
 
-    # Tópicos relacionados (RelatedTopics)
-    for topic in data.get("RelatedTopics", []):
-        if len(results) >= limit:
-            break
-        # Cada item puede ser un resultado o un sub-grupo
-        if "Topics" in topic:
-            for sub in topic["Topics"]:
-                if len(results) >= limit:
-                    break
-                text = sub.get("Text", "").strip()
-                url = sub.get("FirstURL", "").strip()
+        abstract = data.get("AbstractText", "").strip()
+        abstract_url = data.get("AbstractURL", "").strip()
+        abstract_src = data.get("AbstractSource", "").strip()
+        if abstract and abstract_url:
+            results.append({
+                "title": abstract_src or abstract_url,
+                "url": abstract_url,
+                "snippet": abstract,
+            })
+
+        for topic in data.get("RelatedTopics", []):
+            if len(results) >= limit:
+                break
+            if "Topics" in topic:
+                for sub in topic["Topics"]:
+                    if len(results) >= limit:
+                        break
+                    text = sub.get("Text", "").strip()
+                    url = sub.get("FirstURL", "").strip()
+                    if text and url:
+                        results.append({
+                            "title": text.split(" - ")[0] if " - " in text else text[:80],
+                            "url": url,
+                            "snippet": text,
+                        })
+            else:
+                text = topic.get("Text", "").strip()
+                url = topic.get("FirstURL", "").strip()
                 if text and url:
                     results.append({
                         "title": text.split(" - ")[0] if " - " in text else text[:80],
                         "url": url,
                         "snippet": text,
                     })
-        else:
-            text = topic.get("Text", "").strip()
-            url = topic.get("FirstURL", "").strip()
-            if text and url:
-                results.append({
-                    "title": text.split(" - ")[0] if " - " in text else text[:80],
-                    "url": url,
-                    "snippet": text,
-                })
+    except Exception:
+        pass
+
+    # 2. Fallback HTML scraping si Instant Answer devuelve pocos resultados
+    if len(results) < min(2, limit):
+        try:
+            r2 = requests.get(
+                "https://duckduckgo.com/html/",
+                params={"q": query},
+                timeout=8,
+                headers=_DDG_HEADERS,
+            )
+            r2.raise_for_status()
+            seen_urls = {res["url"] for res in results}
+            for m in _RESULT_RE.finditer(r2.text):
+                href = urllib.parse.unquote(m.group("href"))
+                if href in seen_urls:
+                    continue
+                title = _strip_tags(m.group("title"))
+                snippet = _strip_tags(m.group("snippet"))
+                results.append({"title": title, "url": href, "snippet": snippet})
+                seen_urls.add(href)
+                if len(results) >= limit:
+                    break
+        except Exception:
+            pass
 
     return results[:limit]
 

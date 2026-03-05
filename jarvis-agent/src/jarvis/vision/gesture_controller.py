@@ -276,6 +276,19 @@ class GestureController:
             )
             return
 
+        # Pre-warm: inicializar mp.solutions.hands en el hilo principal para que
+        # TFLite/Metal cargue AHORA (evita 500-800ms de latencia en el primer gesto).
+        try:
+            _mp_hands_warmup = _mp_check.solutions.hands.Hands(
+                model_complexity=0,
+                min_detection_confidence=self.cfg.min_detection_confidence,
+                min_tracking_confidence=self.cfg.min_tracking_confidence,
+                max_num_hands=1,
+            )
+            self._prewarm_hands = _mp_hands_warmup  # mantener referencia viva
+        except Exception:
+            self._prewarm_hands = None
+
         self._running = True
         self._thread = threading.Thread(
             target=self._loop,
@@ -363,12 +376,15 @@ class GestureController:
 
         hands = None
         if not use_tasks_backend:
-            hands = mp_hands.Hands(
-                model_complexity=0,  # modelo ligero
-                min_detection_confidence=self.cfg.min_detection_confidence,
-                min_tracking_confidence=self.cfg.min_tracking_confidence,
-                max_num_hands=1,
-            )
+            # Reusar la instancia pre-calentada en start() si está disponible
+            hands = getattr(self, "_prewarm_hands", None)
+            if hands is None:
+                hands = mp_hands.Hands(
+                    model_complexity=0,  # modelo ligero
+                    min_detection_confidence=self.cfg.min_detection_confidence,
+                    min_tracking_confidence=self.cfg.min_tracking_confidence,
+                    max_num_hands=1,
+                )
 
         frame_skip = 0  # procesar un frame de cada dos
         try:
