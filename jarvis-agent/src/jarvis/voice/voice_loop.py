@@ -61,21 +61,17 @@ class VoiceLoop:
                 on_trigger=self._gaze_event.set,  # señaliza el loop principal
             )
         
-        self.vad_model = None
-        self._torch = None
+        self._vad: Optional[object] = None
         if self.loop_cfg.use_vad:
             try:
-                import torch
-                self._torch = torch
-                print("📥 Cargando modelo Silero VAD...")
-                self.vad_model, utils = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
-                    force_reload=False,
-                    onnx=False
-                )
-                self.get_speech_timestamps = utils[0]
-                print("✅ VAD cargado - Conversación continua activada")
+                from jarvis.voice.vad import SileroVAD
+                print("📥 Cargando modelo Silero VAD (ONNX)...")
+                self._vad = SileroVAD.load()
+                if self._vad is not None:
+                    print("✅ VAD cargado - Conversación continua activada")
+                else:
+                    print("⚠️ Silero VAD no disponible — usando fallback RMS")
+                    self.loop_cfg.use_vad = False
             except Exception as e:
                 print(f"⚠️ Error cargando VAD: {e}")
                 self.loop_cfg.use_vad = False
@@ -85,20 +81,21 @@ class VoiceLoop:
         Graba audio hasta detectar silencio con VAD.
         Usa chunks de 512 samples (32ms a 16kHz) como requiere Silero VAD.
         """
-        if not self.vad_model:
+        if not self._vad:
             return None
-        
+
         sample_rate = 16000
         chunk_samples = 512  # Tamaño requerido por Silero VAD para 16kHz
-        
+
         audio_chunks = []
         silence_chunks = 0
         max_silence_chunks = 22  # ~0.7s de silencio (22 * 32ms) — más responsive
         speech_started = False
-        
+
         print("🎤 Escuchando... (habla ahora)")
         start_time = time.time()
-        
+        self._vad.reset_states()
+
         try:
             stream = sd.InputStream(
                 samplerate=sample_rate,
@@ -107,52 +104,51 @@ class VoiceLoop:
                 blocksize=chunk_samples,
             )
             stream.start()
-            
+
             while True:
                 if time.time() - start_time > timeout:
                     print("⏱️ Timeout")
                     stream.stop()
                     stream.close()
                     return None
-                
+
                 # Leer exactamente 512 samples
                 audio_chunk, overflowed = stream.read(chunk_samples)
-                
+
                 if overflowed:
                     continue
-                
+
                 # Convertir a float32 [-1, 1]
                 audio_float = audio_chunk.astype(np.float32).flatten() / 32768.0
-                
+
                 # VAD necesita exactamente 512 samples
                 if len(audio_float) != 512:
                     continue
-                
-                # Detectar voz
-                audio_tensor = self._torch.from_numpy(audio_float)
-                speech_prob = self.vad_model(audio_tensor, sample_rate).item()
-                
+
+                # Detectar voz usando SileroVAD (ONNX)
+                speech_prob = self._vad(audio_float, sample_rate)
+
                 if speech_prob > 0.6:  # Voz detectada (umbral subido para menos falsos positivos)
                     if not speech_started:
                         speech_started = True
                         print("🗣️ Voz detectada")
-                    
+
                     audio_chunks.append(audio_chunk)
                     silence_chunks = 0
                 else:  # Silencio
                     if speech_started:
                         silence_chunks += 1
                         audio_chunks.append(audio_chunk)
-                        
+
                         if silence_chunks >= max_silence_chunks:
                             print("✅ Fin de habla")
                             stream.stop()
                             stream.close()
-                            
+
                             if len(audio_chunks) > 0:
                                 return np.concatenate(audio_chunks, axis=0)
                             return None
-                        
+
         except Exception as e:
             print(f"⚠️ Error VAD: {e}")
             return None

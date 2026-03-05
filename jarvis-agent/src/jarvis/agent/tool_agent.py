@@ -10,6 +10,7 @@ Agente con Claude Sonnet 4.6 como cerebro principal.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import queue as queue_module
@@ -18,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import requests
 from pydantic import ValidationError
@@ -366,6 +367,29 @@ class ToolAgent:
         self.intent_tracker.on_tool_executed(tool_name)
         self._save_tool_event(tool_name, args_to_use, verified_out)
         return verified_out
+
+    def _run_tool_calls_parallel(
+        self,
+        tool_calls: List[Tuple[Optional[str], str, Optional[str]]],
+    ) -> List[Tuple[Optional[str], Dict[str, Any]]]:
+        """
+        Ejecuta una lista de (tc_id, tool_name, args_json) en paralelo si hay >1.
+        Devuelve [(tc_id, tool_out), ...] en el mismo orden que la entrada.
+        """
+        def _run_one(item: Tuple[Optional[str], str, Optional[str]]) -> Tuple[Optional[str], Dict[str, Any]]:
+            tc_id, name, args_json = item
+            try:
+                args = json.loads(args_json or "{}")
+            except Exception:
+                args = {}
+            return tc_id, self._execute_tool(name, args)
+
+        if len(tool_calls) <= 1:
+            return [_run_one(tc) for tc in tool_calls]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tool_calls)) as pool:
+            futures = [pool.submit(_run_one, tc) for tc in tool_calls]
+            return [f.result() for f in futures]
 
     # ------------------------------------------------------------------
     # Dry-run policy
@@ -1026,22 +1050,15 @@ class ToolAgent:
                 ],
             })
 
-            # Ejecutar cada tool y devolver resultados
-            for tc in msg_out.tool_calls:
-                tool_name = tc.function.name
-                try:
-                    tool_args = json.loads(tc.function.arguments)
-                except Exception:
-                    tool_args = {}
-
-                if self.config.debug:
-                    print(f"🔧 Groq usa: {tool_name}({json.dumps(tool_args, ensure_ascii=False)[:80]})")
-
-                tool_out = self._execute_tool(tool_name, tool_args)
-
+            # Ejecutar tools (en paralelo si hay más de una)
+            _tc_inputs = [(tc.id, tc.function.name, tc.function.arguments) for tc in msg_out.tool_calls]
+            if self.config.debug:
+                for _, name, args_json in _tc_inputs:
+                    print(f"🔧 Groq usa: {name}({(args_json or '')[:80]})")
+            for tc_id, tool_out in self._run_tool_calls_parallel(_tc_inputs):
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc_id,
                     "content": json.dumps(tool_out, ensure_ascii=False),
                 })
 
@@ -1168,19 +1185,16 @@ class ToolAgent:
 
             messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
 
+            # Construir inputs normalizados para ejecución paralela
+            _tc_inputs_ol: List[Tuple[Optional[str], str, Optional[str]]] = []
             for tc in tool_calls:
                 func = tc.get("function", {})
-                tool_name = func.get("name", "")
-                tool_args_raw = func.get("arguments", {})
-                if isinstance(tool_args_raw, str):
-                    try:
-                        tool_args = json.loads(tool_args_raw)
-                    except Exception:
-                        tool_args = {"_raw": tool_args_raw}
-                else:
-                    tool_args = tool_args_raw
+                name = func.get("name", "")
+                args_raw = func.get("arguments", {})
+                args_json = args_raw if isinstance(args_raw, str) else json.dumps(args_raw)
+                _tc_inputs_ol.append((None, name, args_json))
 
-                tool_out = self._execute_tool(tool_name, tool_args)
+            for _, tool_out in self._run_tool_calls_parallel(_tc_inputs_ol):
                 messages.append({"role": "tool", "content": json.dumps(tool_out, ensure_ascii=False)})
 
         msg = "Límite de tool loops alcanzado."
@@ -1551,8 +1565,13 @@ class ToolAgent:
         interrupt_event: Optional[threading.Event],
     ) -> str:
         """
-        Groq con streaming (primera iteración sin tools para latencia mínima).
-        Si el modelo usa tools, cae al loop bloqueante de _run_with_groq().
+        Groq con streaming progresivo + tool calling completo.
+
+        Flujo por iteración:
+          1. Llama a Groq con stream=True incluyendo tools.
+          2. Acumula tool_calls del stream (llegan fragmentados) y emite texto.
+          3. Si hay tool_calls: ejecuta tools y continúa el loop (sin re-llamar).
+          4. Si no hay tool_calls: emite buffer restante, guarda y retorna.
         """
         messages: List[Message] = [{"role": "system", "content": SYSTEM_PROMPT_GROQ}]
         for msg in truncate_history(self.state.history, max_messages=20):
@@ -1561,60 +1580,141 @@ class ToolAgent:
             if role in ("user", "assistant") and isinstance(content, str):
                 messages.append({"role": role, "content": content})
 
+        tools = self._cached_ollama_tools  # formato OpenAI — idéntico al que usa Groq
         first_emitted: List[bool] = [False]
 
         def _interrupted() -> bool:
             return interrupt_event is not None and interrupt_event.is_set()
 
-        # Primera iteración: streaming sin tools para latencia mínima.
-        # Si el modelo genera tool_calls en el stream, abortamos y usamos blocking.
-        buffer = ""
-        got_tool_call = False
-        try:
-            stream = self.groq_client.chat.completions.create(
-                model=self.config.groq_model,
-                messages=messages,
-                max_tokens=2000,
-                temperature=0.7,
-                stream=True,
-            )
-            for chunk in stream:
-                if _interrupted():
+        for _loop in range(self.config.max_tool_loops):
+            if _interrupted():
+                break
+
+            buffer = ""
+            # tool_calls acumulados del stream: idx → {id, name, args}
+            tool_acc: dict = {}
+            finish_reason: Optional[str] = None
+
+            try:
+                stream = self.groq_client.chat.completions.create(
+                    model=self.config.groq_model,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    tool_choice="auto" if tools else None,
+                    parallel_tool_calls=False,
+                    max_tokens=2000,
+                    temperature=0.7,
+                    stream=True,
+                )
+                for chunk in stream:
+                    if _interrupted():
+                        break
+                    choice = chunk.choices[0] if chunk.choices else None
+                    if choice is None:
+                        continue
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+
+                    # ── Acumular tool_calls fragmentados ──────────────────────
+                    if choice.delta.tool_calls:
+                        for tc_delta in choice.delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_acc:
+                                tool_acc[idx] = {"id": "", "name": "", "args": ""}
+                            if tc_delta.id:
+                                tool_acc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_acc[idx]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_acc[idx]["args"] += tc_delta.function.arguments
+
+                    # ── Emitir texto progresivo ───────────────────────────────
+                    delta = choice.delta.content
+                    if delta:
+                        buffer += delta
+                        buffer = _emit_sentences(buffer, on_sentence, first_emitted)
+
+            except Exception as e:
+                _logger.warning("[sentences:groq] Stream error: %s — fallback blocking", e)
+                full = self._run_with_groq(user_text)
+                if not first_emitted[0]:
+                    rem = _emit_sentences(full, on_sentence, first_emitted)
+                    if rem.strip():
+                        on_sentence(rem.strip())
+                return full
+
+            # ── Sin tool calls: respuesta final de texto ──────────────────────
+            if not tool_acc:
+                if buffer.strip() and not _interrupted():
+                    on_sentence(buffer.strip())
+                full_text = buffer.strip() or "No generé respuesta."
+                self.state.add_assistant(full_text)
+                self._save_message("assistant", full_text)
+                return full_text
+
+            # ── Con tool calls: verificar params y ejecutar ───────────────────
+            tool_calls_list = [tool_acc[i] for i in sorted(tool_acc.keys())]
+
+            first_question: Optional[str] = None
+            confirm_evt: Optional[Dict[str, Any]] = None
+            for tc in tool_calls_list:
+                try:
+                    _args = json.loads(tc["args"] or "{}")
+                except Exception:
+                    _args = {}
+                _q = self.intent_tracker.check_tool_call(tc["name"], _args, self.registry)
+                if _q:
+                    first_question = _q
                     break
-                choice = chunk.choices[0] if chunk.choices else None
-                if choice is None:
-                    continue
-                # Si el modelo intenta tool_calls, abortar streaming
-                if choice.delta.tool_calls:
-                    got_tool_call = True
+                _confirm = self._maybe_build_dry_run(tc["name"], _args)
+                if _confirm:
+                    confirm_evt = _confirm
                     break
-                delta = choice.delta.content
-                if delta:
-                    buffer += delta
-                    buffer = _emit_sentences(buffer, on_sentence, first_emitted)
-        except Exception as e:
-            _logger.warning("[sentences:groq] Stream error: %s — fallback blocking", e)
-            return self._run_with_groq(user_text)
 
-        if got_tool_call:
-            # Caer al loop bloqueante que ya maneja tools correctamente
-            _logger.debug("[sentences:groq] Tool call detectado — usando loop blocking")
-            full = self._run_with_groq(user_text)
-            # Emitir frases de la respuesta completa si no se emitió nada aún
-            if not first_emitted[0]:
-                rem2 = _emit_sentences(full, on_sentence, first_emitted)
-                if rem2.strip():
-                    on_sentence(rem2.strip())
-            return full
+            if first_question:
+                self.state.add_assistant(first_question)
+                self._save_message("assistant", first_question)
+                on_sentence(first_question)
+                return first_question
+            if confirm_evt:
+                text = self._render_dry_run_prompt(confirm_evt)
+                self.state.add_assistant(text)
+                self._save_message("assistant", text)
+                on_sentence(text)
+                return text
 
-        # Emitir resto del buffer (última frase sin separador)
-        if buffer.strip() and not _interrupted():
-            on_sentence(buffer.strip())
+            # Añadir turno asistente con tool_calls al historial local
+            messages.append({
+                "role": "assistant",
+                "content": buffer or "",
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["args"]},
+                    }
+                    for tc in tool_calls_list
+                ],
+            })
 
-        full_text = buffer.strip() or "No generé respuesta."
-        self.state.add_assistant(full_text)
-        self._save_message("assistant", full_text)
-        return full_text
+            # Ejecutar tools (en paralelo si hay más de una)
+            _tc_inputs_sg = [(tc["id"], tc["name"], tc["args"]) for tc in tool_calls_list]
+            if self.config.debug:
+                for _, name, args_json in _tc_inputs_sg:
+                    _logger.debug("[sentences:groq] tool=%s args=%s", name, (args_json or "")[:80])
+            for tc_id, tool_out in self._run_tool_calls_parallel(_tc_inputs_sg):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": json.dumps(tool_out, ensure_ascii=False),
+                })
+            # Siguiente iteración: el LLM genera la respuesta final con los resultados
+
+        msg = "Límite de iteraciones de herramientas alcanzado."
+        self.state.add_assistant(msg)
+        self._save_message("assistant", msg)
+        return msg
 
 
 def tool_agent_from_settings(

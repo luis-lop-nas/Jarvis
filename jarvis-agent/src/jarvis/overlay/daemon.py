@@ -25,7 +25,6 @@ import queue as _queue
 import re
 import threading
 import time
-import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,61 +38,10 @@ from jarvis.memory.store import MemoryStore
 from jarvis.tools.registry import ToolRegistry, ToolSpec, build_default_registry
 from jarvis.voice.stt import STT, STTConfig
 from jarvis.voice.tts import TTS, TTSConfig
+from jarvis.voice.orchestrator import VoiceOrchestrator
 from jarvis.intents.good_morning import run_morning_briefing, answer_fact_follow_up
 from jarvis.vision.camera_context import CameraContextAnalyzer, CameraContextConfig
 from jarvis.vision.screen_context import ScreenContextAnalyzer, ScreenContextConfig
-
-# ── Silero VAD (ONNX directo, sin torchaudio) ────────────────────────────────
-
-class _SileroVAD:
-    """
-    Wrapper mínimo de Silero VAD usando onnxruntime directamente.
-    No requiere torchaudio ni torch.hub. Usa el ONNX cacheado en ~/.cache/torch/hub/.
-    Singleton: se instancia una vez y se reutiliza en todas las grabaciones.
-    """
-    _ONNX_PATH = (
-        Path.home() / ".cache/torch/hub/snakers4_silero-vad_master"
-        / "src/silero_vad/data/silero_vad.onnx"
-    )
-    _instance: Optional["_SileroVAD"] = None
-
-    def __init__(self) -> None:
-        import onnxruntime as ort
-        self._sess = ort.InferenceSession(
-            str(self._ONNX_PATH),
-            providers=["CPUExecutionProvider"],
-        )
-        self.reset_states()
-
-    def reset_states(self) -> None:
-        # state: shape (2, batch=1, 128) — estado LSTM del modelo
-        self._state = np.zeros((2, 1, 128), dtype=np.float32)
-
-    def __call__(self, audio_float32: np.ndarray, sr: int = 16000) -> float:
-        """audio_float32: shape (512,) float32 [-1,1]. Retorna probabilidad de voz [0,1]."""
-        x = audio_float32.reshape(1, -1)
-        outs = self._sess.run(None, {
-            "input": x,
-            "state": self._state,
-            "sr":    np.array(sr, dtype=np.int64)
-        })
-        # outs[0] = output (1,1), outs[1] = stateN actualizado
-        self._state = outs[1]
-        return float(outs[0][0, 0])
-
-    @classmethod
-    def load(cls) -> Optional["_SileroVAD"]:
-        if cls._instance is not None:
-            return cls._instance
-        try:
-            if not cls._ONNX_PATH.exists():
-                raise FileNotFoundError(f"ONNX no encontrado: {cls._ONNX_PATH}")
-            cls._instance = cls()
-            print("✅ Silero VAD cargado (ONNX, sin torchaudio)")
-            return cls._instance
-        except Exception as e:
-            print(f"⚠️ Silero VAD no disponible ({e}). Usando VAD por RMS.")
-            return None
 
 
 # ── Limpieza de texto para TTS ────────────────────────────────────────────────
@@ -279,32 +227,14 @@ class JarvisDaemon:
 
     HOTKEY = "<ctrl>+<space>"
 
-    # VAD RMS (legacy — fallback si Silero no está disponible)
-    _VAD_CHUNK_MS     = 30
-    _VAD_THRESHOLD    = 300
-    _VAD_SILENCE_SEGS = 15
-    _VAD_TIMEOUT_S    = 15.0
-    _VAD_MAX_S        = 30.0
-
-    # VAD Silero (ML, chunks de 512 samples = 32ms a 16kHz)
-    _SILERO_CHUNK  = 512
-    _SILERO_VOICE  = 0.35   # prob >= 0.35 → voz activa (más sensible que voice_loop 0.6)
-    _SILERO_SILEN  = 0.25   # prob < 0.25  → silencio definitivo
-    _SILENCE_SHORT = 10     # chunks (320ms) para frases cortas (< 2s de voz)
-    _SILENCE_LONG  = 15     # chunks (480ms) para frases largas (>= 2s de voz)
-
-    # Noise floor adaptativo
-    _NF_ALPHA = 0.05    # EMA lenta: no reacciona a picos de voz
-    _NF_INIT  = 200.0   # RMS inicial int16 antes de calibrar
-
     # Conversación continua: espera máxima por voz de seguimiento
     _FOLLOWUP_TIMEOUT_S = 6.0
 
     # Gaze trigger: activar escucha cuando el usuario mira la cámara y habla
     _GAZE_VOICE_CHUNKS = 2   # chunks consecutivos con voz antes de disparar (~0.3s)
 
-    # VU meter: 3000 RMS ≈ voz normal conversacional
-    _VU_NORM = 3000.0
+    # Debounce cross-trigger: evita doble activación wake + gaze simultáneos
+    _ACTIVATION_DEBOUNCE_S = 1.0
 
     def __init__(
         self,
@@ -339,11 +269,12 @@ class JarvisDaemon:
         )
 
         # ── STT
-        self.stt = STT(STTConfig(
+        _stt_cfg = STTConfig(
             engine=getattr(settings, "stt_engine", "groq"),
             groq_api_key=getattr(settings, "groq_api_key", ""),
             groq_model=getattr(settings, "stt_groq_model", "whisper-large-v3-turbo"),
-        ))
+        )
+        self.stt = STT(_stt_cfg)
         self._wav_path = paths.workspace_dir / "_jarvis_mic.wav"
 
         # ── TTS
@@ -380,13 +311,22 @@ class JarvisDaemon:
         # 3 fallos consecutivos → espera 30s antes de reintentar
         self._llm_cb = LLMCircuitBreaker(failure_threshold=3, recovery_timeout=30.0)
 
-        # ── Silero VAD (lazy load en primer uso)
-        self._silero: Optional[_SileroVAD] = None
-        self._silero_loaded: bool = False
+        # ── VoiceOrchestrator (VAD + grabación)
+        self._orchestrator = VoiceOrchestrator(
+            stt_cfg=_stt_cfg,
+            interrupt_event=self._interrupt_event,
+            on_audio_level=lambda lvl: self.bridge.set_audio_level(lvl),
+            vad_engine=getattr(settings, "vad_engine", "silero"),
+        )
 
-        # ── Noise floor adaptativo (int16 RMS, actualizado durante idle)
-        self._noise_floor: float = JarvisDaemon._NF_INIT
-        self._noise_floor_lock = threading.Lock()
+        # ── Debounce cross-trigger (wake word + gaze simultáneos)
+        self._last_activation_ts: float = 0.0
+        self._activation_lock = threading.Lock()
+
+        # Caché de contexto: evita llamar a la Accessibility API en cada request
+        self._context_cache: str = ""
+        self._context_cache_ts: float = 0.0
+        self._CONTEXT_CACHE_TTL: float = 2.0  # segundos
 
         # ── Gaze trigger
         self._gaze_trigger_enabled: bool = bool(
@@ -561,7 +501,7 @@ class JarvisDaemon:
 
         while self._running:
             try:
-                source = self._trigger_queue.get(timeout=0.5)
+                source = self._trigger_queue.get(timeout=0.05)
             except _queue.Empty:
                 continue
 
@@ -620,27 +560,6 @@ class JarvisDaemon:
 
         print(f"⚠️ Acción de gesto desconocida: {action}")
 
-    # ── Silero VAD helpers ────────────────────────────────────────────────────
-
-    def _get_silero(self) -> Optional[_SileroVAD]:
-        """Carga Silero VAD la primera vez que se necesita (lazy, thread-safe por GIL)."""
-        if not self._silero_loaded:
-            self._silero_loaded = True
-            if getattr(self._settings, "vad_engine", "silero") == "silero":
-                self._silero = _SileroVAD.load()
-        return self._silero
-
-    def _update_noise_floor(self, rms: float) -> None:
-        """Actualiza noise floor con EMA lenta. Solo llamar durante silencio pre-voz."""
-        with self._noise_floor_lock:
-            self._noise_floor = (
-                self._NF_ALPHA * rms + (1.0 - self._NF_ALPHA) * self._noise_floor
-            )
-
-    def _get_noise_floor(self) -> float:
-        with self._noise_floor_lock:
-            return self._noise_floor
-
     def _play_wake_beep(self) -> None:
         """Beep 440Hz 80ms no-bloqueante — feedback auditivo inmediato tipo Siri."""
         if not getattr(self._settings, "wake_beep", True):
@@ -667,11 +586,10 @@ class JarvisDaemon:
                 if detected and self._running:
                     self._play_wake_beep()          # feedback auditivo inmediato
                     print("🎤 Wake word detectado")
-                    self._interrupt_event.set()
-                    self._trigger_queue.put("wake_word")
+                    self._try_activate("wake_word")
                     # Cooldown: el modelo mantiene puntuación alta varios chunks
-                    # → esperar 2s para evitar que el mismo «Hey Jarvis» dispare dos veces
-                    time.sleep(2.0)
+                    # → esperar para evitar que el mismo «Hey Jarvis» dispare dos veces
+                    time.sleep(self._ACTIVATION_DEBOUNCE_S + 0.5)
             except Exception as e:
                 if self._running:
                     print(f"⚠️ Wake word loop error: {e}")
@@ -729,10 +647,27 @@ class JarvisDaemon:
                     _log.info("👁 Gaze trigger: cara detectada + RMS=%.0f — activando", rms)
                     print(f"👁️ Gaze trigger — mirando a cámara y hablando (RMS={rms:.0f})")
                     self._play_wake_beep()
-                    self._interrupt_event.set()
-                    self._trigger_queue.put("gaze_trigger")
+                    self._try_activate("gaze_trigger")
             else:
                 consecutive_voice = 0
+
+    # ── Grabación con VAD + VU meter ─────────────────────────────────────────
+
+    # ── Activation debounce ───────────────────────────────────────────────────
+
+    def _try_activate(self, source: str) -> bool:
+        """
+        Intenta activar Jarvis desde una fuente (wake_word, gaze_trigger, hotkey).
+        Retorna False si ya hubo una activación reciente (debounce cross-trigger).
+        """
+        now = time.monotonic()
+        with self._activation_lock:
+            if now - self._last_activation_ts < self._ACTIVATION_DEBOUNCE_S:
+                return False
+            self._last_activation_ts = now
+        self._interrupt_event.set()
+        self._trigger_queue.put(source)
+        return True
 
     # ── Grabación con VAD + VU meter ─────────────────────────────────────────
 
@@ -742,243 +677,10 @@ class JarvisDaemon:
         wait_timeout_s: Optional[float] = None,
         prebuffer: Optional[list] = None,
     ) -> Optional[Path]:
-        """
-        Puerta de entrada: despacha a Silero VAD o RMS según disponibilidad.
-        prebuffer: lista de np.ndarray int16 del ring buffer pre-wake.
-        """
-        if wait_timeout_s is not None:
-            wait_timeout_s = max(0.5, min(wait_timeout_s, 60.0))
-        silero = self._get_silero()
-        if silero is not None:
-            return self._record_with_vad_silero(
-                out_path, wait_timeout_s, prebuffer or [], silero
-            )
-        return self._record_with_vad_rms(out_path, wait_timeout_s)
-
-    def _record_with_vad_rms(self, out_path: Path, wait_timeout_s: Optional[float] = None) -> Optional[Path]:
-        """
-        Graba audio con VAD por RMS (legacy). Usado como fallback si Silero no está disponible.
-        """
-        self._is_recording = True
-        sr         = self.stt.cfg.sample_rate
-        chunk_sz   = int(sr * self._VAD_CHUNK_MS / 1000)
-        max_chunks = int(self._VAD_MAX_S * 1000 / self._VAD_CHUNK_MS)
-        wait_s      = wait_timeout_s if wait_timeout_s is not None else self._VAD_TIMEOUT_S
-        wait_chunks = int(wait_s * 1000 / self._VAD_CHUNK_MS)
-
-        frames: list[np.ndarray] = []
-        voice_started = False
-        silence_count = 0
-        wait_count    = 0
-        peak_rms      = 0.0   # para diagnóstico de permisos
-
-        try:
-            print("🎤 Escuchando...")
-            with sd.InputStream(
-                samplerate=sr,
-                channels=self.stt.cfg.channels,
-                dtype=self.stt.cfg.dtype,
-                blocksize=chunk_sz,
-                device=self.stt.cfg.device,
-            ) as stream:
-                for _ in range(max_chunks):
-                    if not self._running or self._interrupt_event.is_set():
-                        break
-
-                    chunk, _ = stream.read(chunk_sz)
-                    rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-                    if rms > peak_rms:
-                        peak_rms = rms
-
-                    # VU meter: nivel normalizado al orb
-                    self.bridge.set_audio_level(min(1.0, rms / self._VU_NORM))
-
-                    if rms >= self._VAD_THRESHOLD:
-                        if not voice_started:
-                            print("🎙️  Voz detectada")
-                            voice_started = True
-                        silence_count = 0
-                        frames.append(chunk.copy())
-                    elif voice_started:
-                        frames.append(chunk.copy())
-                        silence_count += 1
-                        if silence_count >= self._VAD_SILENCE_SEGS:
-                            print("🔇 Silencio — fin de voz")
-                            break
-                    else:
-                        wait_count += 1
-                        # Diagnóstico tras 3s: si no llega señal, avisar de permisos
-                        if wait_count == 100 and peak_rms < 5.0:
-                            print(f"⚠️  Sin señal de audio (RMS pico: {peak_rms:.1f}). "
-                                  f"Umbral VAD: {self._VAD_THRESHOLD}")
-                            print("   Verifica: Ajustes → Privacidad → Micrófono → "
-                                  "activa permiso para Terminal/Python")
-                        if wait_count >= wait_chunks:
-                            break
-
-            self.bridge.set_audio_level(0.0)
-
-            if self._interrupt_event.is_set():
-                print("🛑 Grabación interrumpida")
-                return None
-
-            if not voice_started or not frames:
-                if wait_timeout_s is not None:
-                    # En modo follow-up, silencio = usuario no quiso hablar → no grabar
-                    return None
-                print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f}, umbral={self._VAD_THRESHOLD})")
-                return self.stt.record_to_wav(out_path, seconds=5.0)
-
-            audio = np.concatenate(frames, axis=0)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with wave.open(str(out_path), "wb") as wf:
-                wf.setnchannels(self.stt.cfg.channels)
-                wf.setsampwidth(2)
-                wf.setframerate(sr)
-                wf.writeframes(audio.tobytes())
-
-            return out_path
-        finally:
-            self._is_recording = False
-
-    def _record_with_vad_silero(
-        self,
-        out_path: Path,
-        wait_timeout_s: Optional[float],
-        prebuffer: list,
-        silero: "_SileroVAD",
-    ) -> Optional[Path]:
-        """
-        Graba audio usando Silero VAD (ONNX).
-        - pre-buffer: audio capturado antes de la wake word (1.5s)
-        - Noise floor adaptativo: calibra el umbral al ruido ambiental
-        - Silencio de corte: 320ms (frase corta) / 480ms (frase larga)
-        """
-        sr          = self.stt.cfg.sample_rate          # 16000
-        chunk_sz    = self._SILERO_CHUNK                # 512 samples = 32ms
-        max_chunks  = int(self._VAD_MAX_S * sr / chunk_sz)
-        wait_chunks = int((wait_timeout_s if wait_timeout_s is not None
-                           else self._VAD_TIMEOUT_S) * sr / chunk_sz)
-
-        frames: list        = []
-        voice_started       = False
-        silence_count       = 0
-        voice_chunks        = 0     # chunks con voz (para elegir silence budget)
-        wait_count          = 0
-        peak_rms            = 0.0
-        silero.reset_states()
-        noise_floor = self._get_noise_floor()
-
+        """Wrapper delegando a VoiceOrchestrator."""
         self._is_recording = True
         try:
-            # ── Incorporar pre-buffer: rechunquear OWW(1280) → Silero(512) ──
-            if prebuffer:
-                raw = np.concatenate([c.flatten() for c in prebuffer])
-                n   = (len(raw) // chunk_sz) * chunk_sz
-                for i in range(0, n, chunk_sz):
-                    blk = raw[i:i + chunk_sz]
-                    frames.append(blk.reshape(-1, 1))
-                    rms = float(np.sqrt(np.mean(blk.astype(np.float32) ** 2)))
-                    if rms > noise_floor * 1.5:
-                        voice_started = True
-                        voice_chunks += 1
-                if voice_started:
-                    print(f"📼 Pre-buffer: {len(prebuffer)} chunks OWW "
-                          f"→ {len(frames)} Silero (contiene voz)")
-
-            print("🎤 Escuchando (Silero VAD)...")
-            with sd.InputStream(
-                samplerate=sr,
-                channels=self.stt.cfg.channels,
-                dtype=self.stt.cfg.dtype,
-                blocksize=chunk_sz,
-                device=self.stt.cfg.device,
-            ) as stream:
-                for _ in range(max_chunks):
-                    if not self._running or self._interrupt_event.is_set():
-                        break
-
-                    chunk, overflowed = stream.read(chunk_sz)
-                    if overflowed:
-                        continue
-
-                    flat     = chunk.flatten()
-                    rms      = float(np.sqrt(np.mean(flat.astype(np.float32) ** 2)))
-                    peak_rms = max(peak_rms, rms)
-                    self.bridge.set_audio_level(min(1.0, rms / self._VU_NORM))
-
-                    # Calibrar noise floor solo antes de que empiece la voz
-                    if not voice_started:
-                        self._update_noise_floor(rms)
-                        noise_floor = self._get_noise_floor()
-
-                    # Filtro rápido: sin energía → no gastar inferencia ONNX
-                    if rms < noise_floor * 1.5 and not voice_started:
-                        wait_count += 1
-                        if wait_count == 100 and peak_rms < 5.0:
-                            print("⚠️  Sin señal de audio. "
-                                  "Verifica: Ajustes → Privacidad → Micrófono → Terminal ✓")
-                        if wait_count >= wait_chunks:
-                            break
-                        continue
-
-                    # ── Silero VAD ────────────────────────────────────────
-                    audio_f = flat.astype(np.float32) / 32768.0
-                    try:
-                        prob = silero(audio_f, sr)
-                    except Exception as _vad_exc:
-                        import logging as _logging
-                        _logging.getLogger(__name__).warning(
-                            "VAD Silero error: %s — reset estado", _vad_exc
-                        )
-                        silero.reset_states()
-                        # Fallback RMS para este chunk
-                        prob = 1.0 if rms > noise_floor * 2.5 else 0.0
-
-                    if prob >= self._SILERO_VOICE:
-                        if not voice_started:
-                            print("🎙️  Voz detectada (Silero)")
-                            voice_started = True
-                        silence_count = 0
-                        voice_chunks += 1
-                        frames.append(chunk.copy())
-
-                    elif voice_started:
-                        frames.append(chunk.copy())
-                        silence_count += 1
-                        # Silencio más corto para frases cortas, más largo para largas
-                        is_long = (voice_chunks * chunk_sz / sr) >= 2.0
-                        budget  = self._SILENCE_LONG if is_long else self._SILENCE_SHORT
-                        if silence_count >= budget and prob < self._SILERO_SILEN:
-                            ms = silence_count * chunk_sz * 1000 // sr
-                            print(f"🔇 Silencio {ms}ms — fin de voz")
-                            break
-                    else:
-                        wait_count += 1
-                        if wait_count >= wait_chunks:
-                            break
-
-            self.bridge.set_audio_level(0.0)
-
-            if self._interrupt_event.is_set():
-                print("🛑 Grabación interrumpida")
-                return None
-
-            if not voice_started or not frames:
-                if wait_timeout_s is not None:
-                    return None  # follow-up: silencio = el usuario no quiso hablar
-                print(f"⚠️ Sin voz detectada (RMS pico={peak_rms:.1f})")
-                return self.stt.record_to_wav(out_path, seconds=5.0)
-
-            audio = np.concatenate(frames, axis=0)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with wave.open(str(out_path), "wb") as wf:
-                wf.setnchannels(self.stt.cfg.channels)
-                wf.setsampwidth(2)
-                wf.setframerate(sr)
-                wf.writeframes(audio.tobytes())
-            return out_path
-
+            return self._orchestrator.record(out_path, prebuffer, wait_timeout_s)
         finally:
             self._is_recording = False
 
@@ -988,32 +690,44 @@ class JarvisDaemon:
         """
         Genera una línea de contexto del entorno actual para inyectar al LLM.
         Incluye: hora, app activa, URL (si navegador), portapapeles (si hay texto).
+        La parte de app/ventana/URL se cachea 2s para evitar llamadas repetidas
+        a la Accessibility API de macOS en requests seguidos.
         """
+        now = time.monotonic()
         parts: List[str] = []
 
-        # Hora actual
+        # Hora actual (siempre fresca — es barata)
         parts.append(f"hora: {datetime.now().strftime('%H:%M')}")
 
-        # App activa via Accessibility API
-        try:
-            from jarvis.vision.accessibility import get_active_app
-            app = get_active_app()
-            name = app.get("name", "")
-            if name and name not in ("Unknown", "Jarvis"):
-                parts.append(f"app activa: {name}")
-                title = (app.get("window_title") or "").strip()
-                if title and title != name:
-                    parts.append(f"ventana: {title[:60]}")
-                url = (app.get("url") or "").strip()
-                if url:
-                    parts.append(f"URL: {url[:80]}")
-        except Exception:
-            pass
+        # App activa via Accessibility API — con caché TTL
+        if now - self._context_cache_ts < self._CONTEXT_CACHE_TTL:
+            cached = self._context_cache
+        else:
+            cached = ""
+            try:
+                from jarvis.vision.accessibility import get_active_app
+                app = get_active_app()
+                name = app.get("name", "")
+                if name and name not in ("Unknown", "Jarvis"):
+                    app_parts: List[str] = [f"app activa: {name}"]
+                    title = (app.get("window_title") or "").strip()
+                    if title and title != name:
+                        app_parts.append(f"ventana: {title[:60]}")
+                    url = (app.get("url") or "").strip()
+                    if url:
+                        app_parts.append(f"URL: {url[:80]}")
+                    cached = " | ".join(app_parts)
+            except Exception:
+                pass
+            self._context_cache = cached
+            self._context_cache_ts = now
+
+        if cached:
+            parts.append(cached)
 
         # Portapapeles (solo si hay texto relevante)
         clip = self._clipboard.text.strip()
         if len(clip) > 5:
-            # Truncar y limpiar para no contaminar el prompt
             clip_display = clip[:200].replace("\n", " ↵ ")
             parts.append(f'portapapeles: «{clip_display}»')
 
@@ -1245,51 +959,101 @@ class JarvisDaemon:
                 self._hud.show_text(response)
                 return
 
+            # ── LLM streaming: habla frase a frase conforme el LLM genera ──────
+            response_parts: List[str] = []
+            sentence_q: _queue.Queue[Optional[str]] = _queue.Queue()
+
+            # Hilo TTS: consume frases de la cola sin gaps entre ellas
+            _tts_thread: Optional[threading.Thread] = None
+            if not self._in_meeting_mode:
+                def _tts_worker() -> None:
+                    self.tts.speak_queued(
+                        sentence_q,
+                        interrupt_event=self._interrupt_event,
+                    )
+                _tts_thread = threading.Thread(
+                    target=_tts_worker, name="tts-queue", daemon=True
+                )
+                _tts_thread.start()
+
+            def _on_sentence(sentence: str) -> None:
+                """Callback llamado por run_sentences() para cada frase lista."""
+                if self._interrupt_event.is_set():
+                    return
+                speech = _clean_for_speech(sentence)
+                if not speech:
+                    return
+
+                # Primera frase → cambiar a "acting" inmediatamente
+                if not response_parts:
+                    self.bridge.set_state("acting")
+
+                response_parts.append(sentence)
+
+                if not self._in_meeting_mode:
+                    sentence_q.put(speech)
+
             try:
-                response = self.agent.run(augmented)
+                response = self.agent.run_sentences(
+                    augmented,
+                    on_sentence=_on_sentence,
+                    interrupt_event=self._interrupt_event,
+                )
                 self._llm_cb.record_success()
             except Exception as llm_err:
                 self._llm_cb.record_failure()
+                sentence_q.put(None)  # desbloquear worker TTS
+                if _tts_thread:
+                    _tts_thread.join(timeout=2)
                 raise llm_err
 
-            # ── Actualizar tracker con la respuesta del LLM
+            # ── Actualizar tracker con la respuesta completa del LLM
             self.agent.intent_tracker.analyze_llm_response(response)
 
             if not response or self._interrupt_event.is_set():
+                sentence_q.put(None)
+                if _tts_thread:
+                    _tts_thread.join(timeout=2)
                 return
 
             print(f"🤖 Jarvis: «{response}»")
-            self.bridge.set_state("acting")
+            if not response_parts:
+                # run_sentences no llamó _on_sentence (respuesta vacía o tool-only)
+                self.bridge.set_state("acting")
 
-            # ── Actualizar chat panel con la respuesta
+            # ── Actualizar chat panel y HUD con respuesta completa
             if self._chat_panel is not None:
                 self._chat_panel.add_jarvis_message(response)
 
-            # ── Mostrar respuesta en HUD; añadir estado de intent si está activo
             intent_status = self.agent.intent_tracker.get_status_text()
             hud_text = f"{intent_status}\n\n{response}" if intent_status else response
             self._hud.show_text(hud_text)
 
-            # ── Limpiar para TTS: sin markdown, sin <function=...>, sin anotaciones
-            speech_text = _clean_for_speech(response)
-            if not speech_text:
-                self.bridge.set_state("idle")
-                return
+            # ── Si no se habló nada, encolar la respuesta completa
+            if not response_parts and not self._interrupt_event.is_set():
+                speech_text = _clean_for_speech(response)
+                if speech_text:
+                    if self._in_meeting_mode:
+                        print("🎙 Modo reunión: TTS omitido")
+                    elif not self._interrupt_event.is_set():
+                        sentence_q.put(speech_text)
 
-            # ── Hablar respuesta completa de una vez → sin pausas entre frases
-            if not self._interrupt_event.is_set():
-                if self._in_meeting_mode:
-                    print("🎙 Modo reunión: TTS omitido")
-                else:
-                    self.tts.speak_nonblocking(speech_text)
-                    while self.tts.is_speaking:
-                        if self._interrupt_event.is_set():
-                            self.tts.stop()
-                            break
-                        time.sleep(0.05)
+            # Señalar fin de stream y esperar a que el TTS termine
+            sentence_q.put(None)
+            if _tts_thread:
+                _tts_thread.join(timeout=30)
 
         except Exception as e:
             print(f"⚠️ Error procesando texto: {e}")
+            # Feedback auditivo del error al usuario
+            try:
+                if not self._interrupt_event.is_set() and not self._in_meeting_mode:
+                    self.tts.speak_nonblocking("Lo siento, ocurrió un error.")
+                    _t0 = time.monotonic()
+                    while self.tts.is_speaking and (time.monotonic() - _t0) < 5:
+                        time.sleep(0.05)
+            except Exception:
+                pass
         finally:
             self.tts.stop()
             self.bridge.set_audio_level(0.0)
@@ -1414,8 +1178,7 @@ class JarvisDaemon:
 
             def on_activate():
                 print("⌨️  Hotkey detectada")
-                self._interrupt_event.set()
-                self._trigger_queue.put("hotkey")
+                self._try_activate("hotkey")
 
             # pynput >= 1.8 añade argumento 'injected' a los callbacks.
             # Envolver on_activate para aceptar cualquier firma.

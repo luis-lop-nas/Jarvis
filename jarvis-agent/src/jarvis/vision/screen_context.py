@@ -166,6 +166,7 @@ class ScreenContextAnalyzer:
                 }],
                 max_tokens=60,
                 temperature=0.1,
+                timeout=8.0,
             )
 
             if not resp.choices or not resp.choices[0].message.content:

@@ -33,6 +33,7 @@ class MemoryStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             self._local.conn = conn
         return self._local.conn
 
@@ -45,15 +46,19 @@ class MemoryStore:
         conn.commit()
 
     def _increment_write(self) -> None:
-        """Incrementa el contador de escrituras; ejecuta VACUUM cada 100."""
+        """Incrementa el contador de escrituras; lanza VACUUM incremental cada 100."""
         with self._lock:
             self._write_count += 1
             do_vacuum = (self._write_count % 100 == 0)
         if do_vacuum:
-            try:
-                self._get_conn().execute("VACUUM")
-            except Exception:
-                pass
+            def _vacuum_bg() -> None:
+                try:
+                    conn = sqlite3.connect(str(self._db_path))
+                    conn.execute("PRAGMA incremental_vacuum(50)")
+                    conn.close()
+                except Exception:
+                    pass
+            threading.Thread(target=_vacuum_bg, daemon=True).start()
 
     # ── Public API ───────────────────────────────────────────────────────────
 

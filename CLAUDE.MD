@@ -2,7 +2,7 @@
 
 ## Descripción
 
-Asistente de IA personal para macOS con modos desktop (overlay nativo PyObjC), web (FastAPI), CLI y voz. Integra tool use con 21 herramientas, memoria en SQLite, pipeline estructurado PEV opcional y automatizaciones locales.
+Asistente de IA personal para macOS con modos desktop (overlay nativo PyObjC), web (FastAPI), CLI y voz. Integra tool use con 22 herramientas, memoria en SQLite, pipeline estructurado PEV opcional y automatizaciones locales.
 
 ---
 
@@ -71,6 +71,8 @@ src/jarvis/
 │   ├── wake_word.py      — OpenWakeWord o Porcupine
 │   ├── stt.py            — Groq Whisper o Whisper local
 │   ├── tts.py            — ElevenLabs, Piper o macOS say
+│   ├── vad.py            — SileroVAD singleton (ONNX, sin torch)
+│   ├── orchestrator.py   — VoiceOrchestrator: VAD + grabación + noise floor EMA
 │   └── voice_loop.py     — Bucle de audio principal
 │
 ├── vision/
@@ -127,9 +129,9 @@ src/jarvis/
 
 ---
 
-## Herramientas registradas (21)
+## Herramientas registradas (22)
 
-`shell` · `filesystem` · `open_app` · `run_code` · `web_search` · `web_agent` · `spotify` · `calendar` · `send_email` · `send_message` · `vision` · `code_assistant` · `knowledge` · `organize_files` · `download_file` · `search_and_download` · `system_info` · `datetime` · `weather` · `cad_generator` · `routines`
+`shell` · `filesystem` · `open_app` · `run_code` · `web_search` · `web_agent` · `spotify` · `calendar` · `send_email` · `send_message` · `vision` · `code_assistant` · `knowledge` · `organize_files` · `download_file` · `search_and_download` · `system_info` · `datetime` · `weather` · `cad_generator` · `routines` · `annotate_screen`
 
 ---
 
@@ -143,7 +145,9 @@ src/jarvis/
 
 ### ToolAgent (modo por defecto)
 
-Bucles reactivos LLM hasta 8 iteraciones. `_execute_tool()` aplica `prompt_guard` antes de ejecutar cualquier tool.
+Bucles reactivos LLM hasta 8 iteraciones. `_execute_tool()` aplica `prompt_guard` antes de ejecutar cualquier tool. Múltiples tool calls se ejecutan en paralelo con `ThreadPoolExecutor` vía `_run_tool_calls_parallel()` (Groq, Ollama y streaming).
+
+**LLM Streaming**: `run_sentences()` emite frases vía callback `on_sentence` mientras el LLM genera. Daemon usa `speak_queued()` con una `Queue` para reproducir frases sin gaps entre ellas (LLM y TTS corren en paralelo).
 
 ### PEVAgent (`PEV_ENABLED=true`)
 
@@ -270,7 +274,7 @@ PYTHONPATH=src python -m pytest tests/ --cov=jarvis --cov-report=term-missing
 PYTHONPATH=src python -m pytest tests/test_gesture_controller.py -v
 ```
 
-25 ficheros de test, ~456 tests. Cobertura mínima configurada: 70%. Los tests de overlay requieren display; el resto no necesitan hardware real.
+~30 ficheros de test, 618 tests. Cobertura mínima configurada: 70%. Los tests de overlay requieren display; el resto no necesitan hardware real.
 
 ---
 
@@ -321,4 +325,4 @@ pip install -e ".[dev]"        # pytest, ruff, mypy, black, pre-commit
 
 ---
 
-Última actualización: 27 de febrero de 2026
+Última actualización: 5 de marzo de 2026
